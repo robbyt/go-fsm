@@ -267,7 +267,7 @@ func TestFSM_RaceCondition_Broadcast(t *testing.T) {
 	testState(t, listener, StateG, true)
 
 	// Now that the channel is empty, continue writing and reading
-	fsmMachine.Transition(StateA)
+	assert.Nil(t, fsmMachine.Transition(StateA))
 	testState(t, listener, StateA, false)
 }
 

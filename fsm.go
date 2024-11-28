@@ -73,7 +73,7 @@ func New(handler slog.Handler, initialState string, allowedTransitions Transitio
 		slog.New(handler).Warn("Handler is nil, using the default logger configuration.")
 	}
 
-	if allowedTransitions == nil || len(allowedTransitions) == 0 {
+	if len(allowedTransitions) == 0 {
 		return nil, fmt.Errorf("%w: allowedTransitions is empty or nil", ErrAvailableStateData)
 	}
 
