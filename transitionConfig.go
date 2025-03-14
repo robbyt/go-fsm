@@ -47,6 +47,7 @@ const (
 	StatusStopping  = "Stopping"
 	StatusStopped   = "Stopped"
 	StatusError     = "Error"
+	StatusUnknown   = "Unknown"
 )
 
 // TypicalTransitions is a common set of transitions, useful as a guide. Each key is the current
@@ -54,9 +55,10 @@ const (
 var TypicalTransitions = TransitionsConfig{
 	StatusNew:       {StatusBooting, StatusError},
 	StatusBooting:   {StatusRunning, StatusError},
-	StatusRunning:   {StatusReloading, StatusStopping, StatusStopped, StatusError},
+	StatusRunning:   {StatusReloading, StatusStopping, StatusError},
 	StatusReloading: {StatusRunning, StatusError},
 	StatusStopping:  {StatusStopped, StatusError},
 	StatusStopped:   {StatusNew, StatusError},
-	StatusError:     {StatusNew, StatusStopped},
+	StatusError:     {StatusError, StatusStopping, StatusStopped},
+	StatusUnknown:   {StatusUnknown},
 }

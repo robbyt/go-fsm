@@ -19,7 +19,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 		// Create a nil Context variable to test the guard
 		// This approach avoids the linter warning while still testing nil context behavior
 		var nilCtx context.Context
-		
+
 		statusChan := fsm.GetStateChan(nilCtx)
 		assert.Nil(t, statusChan, "Should return nil when context is nil")
 	})
@@ -319,7 +319,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 		for _, state := range transitions {
 			err = fsm.Transition(state)
 			require.NoError(t, err)
-			time.Sleep(50 * time.Millisecond) // Give time for state to propagate
+			time.Sleep(50 * time.Millisecond)
 		}
 
 		// Unsubscribe and close the channel
@@ -339,9 +339,14 @@ func TestFSM_GetStatusChan(t *testing.T) {
 		assert.Equal(t, expected, statesReceived, "Should have received all state transitions")
 
 		// Verify a transition after unsubscribe doesn't affect anything
+		err = fsm.Transition(StatusStopping)
+		require.NoError(t, err)
+
 		err = fsm.Transition(StatusStopped)
 		require.NoError(t, err)
+
 		assert.Equal(t, expected, statesReceived, "States shouldn't change after unsubscribe")
+		assert.Equal(t, StatusStopped, fsm.GetState(), "Final state should be stopped")
 	})
 
 	t.Run("Single state transition", func(t *testing.T) {
