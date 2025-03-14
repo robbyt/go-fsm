@@ -76,6 +76,12 @@ func (fsm *Machine) unsubscribe(ch chan string) {
 // of state change notifications could be unpredictable.
 func (fsm *Machine) broadcast(state string) {
 	logger := fsm.logger.WithGroup("broadcast").With("state", state)
+
+	// Lock during the entire broadcast to prevent race conditions
+	// with subscribers being added or removed during iteration
+	fsm.subscriberMutex.Lock()
+	defer fsm.subscriberMutex.Unlock()
+
 	fsm.subscribers.Range(func(key, value any) bool {
 		ch := key.(chan string)
 		select {

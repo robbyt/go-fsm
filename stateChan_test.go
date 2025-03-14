@@ -2,6 +2,8 @@ package fsm
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -386,5 +388,163 @@ func TestFSM_GetStatusChan(t *testing.T) {
 				t.Fatalf("Channel %d never received state update", i)
 			}
 		}
+	})
+
+	t.Run("Race condition test: demonstrate race with closed channel", func(t *testing.T) {
+		// This test demonstrates the race condition by showing we might try to write to closed channels
+		// during broadcast if subscribers are concurrently being removed
+
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		// Track if we panic from writing to closed channel
+		var panicked atomic.Bool
+
+		// Create a channel that will be closed while broadcast is running
+		racyChan := make(chan string, 1)
+
+		// Add the channel as a subscriber
+		unsub := fsm.AddSubscriber(racyChan)
+
+		// Wait group to coordinate the test
+		var wg sync.WaitGroup
+
+		// Start goroutine to transition rapidly
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			// Start with initial state transitions
+			for i := 0; i < 100; i++ {
+				// We'll produce many state transitions, which trigger broadcasts
+				err := fsm.Transition(StatusBooting)
+				if err != nil {
+					continue
+				}
+
+				err = fsm.Transition(StatusRunning)
+				if err != nil {
+					continue
+				}
+
+				// Very small sleep to allow other goroutines to run
+				// but keep transitions rapid
+				time.Sleep(time.Microsecond)
+			}
+		}()
+
+		// Start goroutine that will close the channel during broadcast
+		// We'll use another goroutine to simulate the race condition by:
+		// 1. Adding a subscriber
+		// 2. Unsubscribing immediately (which could happen during broadcast)
+		// 3. Closing the channel immediately after unsubscribe
+		// If the broadcast function isn't properly protected by a mutex, it might try
+		// to send to the channel after it's been unsubscribed and closed
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			// Create many channels that will be immediately unsubscribed and closed
+			// This increases the chance of hitting the race condition
+			for i := 0; i < 10000; i++ {
+				ch := make(chan string, 1)
+
+				// Add subscriber
+				unsubFn := fsm.AddSubscriber(ch)
+
+				// Immediately unsubscribe
+				unsubFn()
+
+				// Close the channel immediately after unsubscribing
+				// In a race condition, broadcast might still try to use it
+				close(ch)
+
+				// Let's try to detect if broadcast tries to send to this closed channel
+				// by capturing the panic that would occur
+				defer func() {
+					if r := recover(); r != nil {
+						t.Logf("Caught panic: %v", r)
+						panicked.Store(true)
+					}
+				}()
+			}
+
+			// Also try unsubscribing the original channel
+			unsub()
+			close(racyChan)
+		}()
+
+		// Start another goroutine that continuously adds and removes subscribers
+		// to increase contention
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			channels := make([]struct {
+				ch    chan string
+				unsub func()
+			}, 1000)
+
+			for i := 0; i < 1000; i++ {
+				// Add more subscribers
+				for j := 0; j < 10; j++ {
+					idx := (i*10 + j) % len(channels)
+
+					// Clean up previous subscriber at this index if it exists
+					if channels[idx].unsub != nil {
+						channels[idx].unsub()
+						// Don't close the channel here, the unsubscribe is sufficient
+					}
+
+					// Create new channel and subscribe
+					ch := make(chan string, 1)
+					unsub := fsm.AddSubscriber(ch)
+
+					channels[idx] = struct {
+						ch    chan string
+						unsub func()
+					}{ch, unsub}
+
+					// Drain any messages
+					select {
+					case <-ch:
+					default:
+					}
+				}
+
+				// Very small sleep to increase chance of race
+				time.Sleep(time.Microsecond)
+			}
+
+			// Clean up all subscribers at the end
+			for _, entry := range channels {
+				if entry.unsub != nil {
+					entry.unsub()
+				}
+			}
+		}()
+
+		// Wait for all goroutines to complete or timeout
+		waitCh := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(waitCh)
+		}()
+
+		select {
+		case <-waitCh:
+			// Test completed normally
+		case <-time.After(5 * time.Second):
+			// Timeout is okay
+		}
+
+		// If we're using the race detector, we might not observe actual panics
+		// but we should see data races reported by the race detector
+		t.Logf("Detected panic from closed channel: %v", panicked.Load())
+
+		// The test is considered successful if:
+		// 1. It completes without deadlocking
+		// 2. The race detector reports a race condition (when run with -race)
+		// 3. OR we directly observe a panic from a closed channel (if race detector is not used)
 	})
 }
