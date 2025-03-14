@@ -40,13 +40,13 @@ func makeIndex(transCfg TransitionsConfig) transitionIndex {
 
 // Collection of common statuses
 const (
-	StatusNew       = "StatusNew"
-	StatusBooting   = "StatusBooting"
-	StatusRunning   = "StatusRunning"
-	StatusReloading = "StatusReloading"
-	StatusStopping  = "StatusStopping"
-	StatusStopped   = "StatusStopped"
-	StatusError     = "StatusError"
+	StatusNew       = "New"
+	StatusBooting   = "Booting"
+	StatusRunning   = "Running"
+	StatusReloading = "Reloading"
+	StatusStopping  = "Stopping"
+	StatusStopped   = "Stopped"
+	StatusError     = "Error"
 )
 
 // TypicalTransitions is a common set of transitions, useful as a guide. Each key is the current
