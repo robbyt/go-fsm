@@ -38,19 +38,20 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+
+	"sync/atomic"
 )
 
 // Machine represents a finite state machine that tracks its current state
 // and manages state transitions.
 type Machine struct {
-	mutex              sync.RWMutex
-	state              string
-	allowedTransitions transitionConfigWithIndex
-	subscriberMutex    sync.Mutex
-	subscribers        map[chan string]struct{}
-	channelBufferSize  int // used when creating the status channel, must be > 0
-	logHandler         slog.Handler
-	logger             *slog.Logger
+	mutex           sync.RWMutex
+	state           atomic.Value
+	transitionIndex transitionIndex
+	subscriberMutex sync.Mutex
+	subscribers     sync.Map // map[chan string]struct{}
+	logHandler      slog.Handler
+	logger          *slog.Logger
 }
 
 // New initializes a new finite state machine with the specified initial state and
@@ -81,29 +82,25 @@ func New(handler slog.Handler, initialState string, allowedTransitions Transitio
 		return nil, fmt.Errorf("%w: initial state '%s' is not defined", ErrInvalidState, initialState)
 	}
 
-	trnsIndex := newTransitionWithIndex(allowedTransitions)
+	m := &Machine{
+		transitionIndex: makeIndex(allowedTransitions),
+		logHandler:      handler,
+		logger:          slog.New(handler),
+	}
+	m.state.Store(initialState)
 
-	return &Machine{
-		state:              initialState,
-		allowedTransitions: trnsIndex,
-		subscribers:        make(map[chan string]struct{}),
-		channelBufferSize:  defaultStateChanBufferSize,
-		logHandler:         handler,
-		logger:             slog.New(handler),
-	}, nil
+	return m, nil
 }
 
 // GetState returns the current state of the finite state machine.
 func (fsm *Machine) GetState() string {
-	fsm.mutex.RLock()
-	defer fsm.mutex.RUnlock()
-	return fsm.state
+	return fsm.state.Load().(string)
 }
 
 // setState updates the FSM's state and notifies all subscribers about the state change.
 // It assumes that the caller has already acquired the necessary locks.
 func (fsm *Machine) setState(state string) {
-	fsm.state = state
+	fsm.state.Store(state)
 	fsm.broadcast(state)
 }
 
@@ -113,7 +110,7 @@ func (fsm *Machine) SetState(state string) error {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 
-	if _, ok := fsm.allowedTransitions[state]; !ok {
+	if _, ok := fsm.transitionIndex[state]; !ok {
 		return fmt.Errorf("%w: state '%s' is not defined", ErrInvalidState, state)
 	}
 
@@ -124,8 +121,8 @@ func (fsm *Machine) SetState(state string) error {
 // transition attempts to change the FSM's state to toState. It returns an error if the transition
 // is invalid or if the target state is not allowed from the current state.
 func (fsm *Machine) transition(toState string) error {
-	currentState := fsm.state
-	allowedTransitions, ok := fsm.allowedTransitions[currentState]
+	currentState := fsm.GetState()
+	allowedTransitions, ok := fsm.transitionIndex[currentState]
 	if !ok {
 		return fmt.Errorf("%w: current state is '%s'", ErrInvalidState, currentState)
 	}
@@ -163,8 +160,9 @@ func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 
-	if fsm.state != fromState {
-		return fmt.Errorf("%w: current state is '%s', expected '%s'", ErrCurrentStateIncorrect, fsm.state, fromState)
+	currentState := fsm.GetState()
+	if currentState != fromState {
+		return fmt.Errorf("%w: current state is '%s', expected '%s'", ErrCurrentStateIncorrect, currentState, fromState)
 	}
 
 	return fsm.transition(toState)

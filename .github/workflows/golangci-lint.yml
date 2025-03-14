@@ -1,4 +1,5 @@
 name: golangci-lint
+
 on:
   push:
     branches:
@@ -8,10 +9,10 @@ on:
 
 permissions:
   contents: read
-  
+
   # Optional: allow read access to pull request. Use with `only-new-issues` option.
   pull-requests: read
-  
+
   # Optional: allow write access to checks to allow the action to annotate code in the PR.
   checks: write
 
@@ -21,10 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - uses: actions/setup-go@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.23.x'
+          go-version-file: go.mod
+          check-latest: true
+
       - name: Display Go version
         run: go version
 
@@ -32,5 +36,4 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          only-new-issues: true
-          cache-invalidation-interval: 14
+          cache-invalidation-interval: 30

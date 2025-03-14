@@ -1,44 +1,42 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
 name: Go
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+env:
+  GOCACHE: "/tmp/go-cache"
+  GOMODCACHE: "/tmp/go-mod-cache"
 
 jobs:
-
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.23.x'
-        cache: false
-    
-    - name: Display Go version
-      run: go version
-    
-    - name: go mod tidy (fails if changes are needed)
-      run: go mod tidy --diff
+      - name: Display Go version
+        run: go version
 
-    - name: go test
-      run: go test ./... -cover -race
+      - name: go mod tidy (fails if changes are needed)
+        run: go mod tidy --diff
 
-    - name: "smoke test"
-      run: cd example && go build . && ./example 
+      - name: Go test
+        run: go test ./... -cover -race
+
+      - name: Build example
+        run: cd example && go build .
+
+      - name: "smoke test"
+        run: cd example && ./example

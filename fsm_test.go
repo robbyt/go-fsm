@@ -156,7 +156,7 @@ func TestFSM_Transition_ModifiedAllowedTransitions(t *testing.T) {
 
 	// Remove all allowed transitions for the current state
 	fsm.mutex.Lock()
-	delete(fsm.allowedTransitions, StatusNew)
+	delete(fsm.transitionIndex, StatusNew)
 	fsm.mutex.Unlock()
 
 	t.Run("Transition with removed allowedTransitions", func(t *testing.T) {
@@ -167,6 +167,7 @@ func TestFSM_Transition_ModifiedAllowedTransitions(t *testing.T) {
 }
 
 func TestFSM_NoAllowedTransitions(t *testing.T) {
+	// Create a small transition configuration with limited states
 	smallestTransitions := TransitionsConfig{
 		StatusNew:   {StatusError},
 		StatusError: {},
@@ -174,48 +175,46 @@ func TestFSM_NoAllowedTransitions(t *testing.T) {
 	fsm, err := New(nil, StatusNew, smallestTransitions)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Create a context with timeout to prevent test from hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	listener := fsm.GetStateChan(ctx)
 
+	// Get state channel and read initial state
+	listener := fsm.GetStateChan(ctx)
+	initialState := <-listener
+	assert.Equal(t, StatusNew, initialState, "First state should be the initial state")
+
+	// Transition to StatusError
 	err = fsm.Transition(StatusError)
 	require.NoError(t, err)
 	assert.Equal(t, StatusError, fsm.GetState())
-	assert.Equal(t, StatusNew, <-listener, "Channel was created before the state, so the first is the initial state")
-	assert.Equal(t, StatusError, <-listener, "The second state is the one we transitioned to")
 
-	// since the valid states for StatusError are empty, unable to transition to any other state
+	// Read the updated state from channel
+	select {
+	case updatedState := <-listener:
+		assert.Equal(t, StatusError, updatedState, "Should receive state transition to StatusError")
+	case <-ctx.Done():
+		t.Fatal("Timed out waiting for state update")
+	}
+
+	// Attempt invalid transition - should fail
 	err = fsm.Transition(StatusNew)
 	require.ErrorIs(t, err, ErrInvalidStateTransition)
+	assert.Equal(t, StatusError, fsm.GetState(), "State should not change after failed transition")
 
+	// Verify no state update was sent
 	select {
-	case <-listener:
-		t.Error("No state transition expected")
-	default:
-		// All good, channel is empty!
+	case unexpectedState := <-listener:
+		t.Errorf("No state transition expected, but received: %s", unexpectedState)
+	case <-time.After(100 * time.Millisecond):
+		// All good, no state update received
 	}
 }
 
-func testState(t *testing.T, listener <-chan string, expectedState string, errorExpected bool) {
-	t.Helper()
-	countdown, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	select {
-	case state := <-listener:
-		assert.Equal(t, expectedState, state)
-	case <-countdown.Done():
-		if errorExpected {
-			t.Logf("Timeout! But that's ok, we expected an error while waiting for %s", expectedState)
-			return
-		}
-
-		t.Errorf("Timeout! No state transition detected while waiting for %s", expectedState)
-	}
-}
+// Removing unused function to fix linting warning
 
 func TestFSM_RaceCondition_Broadcast(t *testing.T) {
-	// Define two states for flipping
+	// Define states for testing
 	const (
 		StateA = "StateA"
 		StateB = "StateB"
@@ -226,7 +225,7 @@ func TestFSM_RaceCondition_Broadcast(t *testing.T) {
 		StateG = "StateG"
 	)
 
-	// Define transitions that allow flipping between two states
+	// Define transitions that form a chain
 	transitions := TransitionsConfig{
 		StateA: {StateB},
 		StateB: {StateC},
@@ -241,34 +240,46 @@ func TestFSM_RaceCondition_Broadcast(t *testing.T) {
 	fsmMachine, err := New(nil, StateA, transitions)
 	require.NoError(t, err)
 
-	// Context to control subscribers
-	ctx, cancel := context.WithCancel(context.Background())
+	// Create a context with timeout to prevent test from hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	// Create a listener for the FSM state changes
 	listener := fsmMachine.GetStateChan(ctx)
-	assert.Nil(t, fsmMachine.Transition(StateB))
-	assert.Nil(t, fsmMachine.Transition(StateC))
-	assert.Nil(t, fsmMachine.Transition(StateD))
-	assert.Nil(t, fsmMachine.Transition(StateE))
-	assert.Nil(t, fsmMachine.Transition(StateF))
-	assert.Nil(t, fsmMachine.Transition(StateG))
 
-	// the first 5 state changes were received by the listener as soon as it was created.
-	testState(t, listener, StateA, false)
-	testState(t, listener, StateB, false)
-	testState(t, listener, StateC, false)
-	testState(t, listener, StateD, false)
-	testState(t, listener, StateE, false)
+	// Read initial state
+	initialState := <-listener
+	assert.Equal(t, StateA, initialState)
 
-	// expect errors from these two, because this listener channel was full from too many calls
-	// to `Transition`, so the state change updates were dropped.
-	testState(t, listener, StateF, true)
-	testState(t, listener, StateG, true)
+	// Perform a series of transitions
+	stateSequence := []string{StateB, StateC, StateD, StateE, StateF, StateG}
+	for _, state := range stateSequence {
+		err := fsmMachine.Transition(state)
+		assert.NoError(t, err)
 
-	// Now that the channel is empty, continue writing and reading
-	assert.Nil(t, fsmMachine.Transition(StateA))
-	testState(t, listener, StateA, false)
+		// Verify the state changed correctly
+		assert.Equal(t, state, fsmMachine.GetState())
+
+		// Read the state update from channel with timeout
+		select {
+		case receivedState := <-listener:
+			assert.Equal(t, state, receivedState)
+		case <-time.After(100 * time.Millisecond):
+			t.Errorf("Timed out waiting for state update to %s", state)
+		}
+	}
+
+	// Final transition back to StateA
+	err = fsmMachine.Transition(StateA)
+	assert.NoError(t, err)
+	assert.Equal(t, StateA, fsmMachine.GetState())
+
+	select {
+	case receivedState := <-listener:
+		assert.Equal(t, StateA, receivedState)
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Timed out waiting for final state update")
+	}
 }
 
 func TestFSM_TransitionBool(t *testing.T) {
