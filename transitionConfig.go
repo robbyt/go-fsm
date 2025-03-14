@@ -16,12 +16,15 @@ limitations under the License.
 
 package fsm
 
+// TransitionsConfig represents a configuration for allowed transitions the FSM.
 type TransitionsConfig map[string][]string
 
-type transitionConfigWithIndex map[string]map[string]struct{}
+// transitionIndex is a map of maps, the second map is like a set, used for
+type transitionIndex map[string]map[string]struct{}
 
-func newTransitionWithIndex(transCfg TransitionsConfig) transitionConfigWithIndex {
-	t := make(transitionConfigWithIndex)
+// makeIndex called during fsm creation, creates a transitionIndex from a TransitionsConfig.
+func makeIndex(transCfg TransitionsConfig) transitionIndex {
+	t := make(transitionIndex)
 
 	for from, to := range transCfg {
 		if _, ok := t[from]; !ok {

@@ -18,74 +18,55 @@ package fsm
 
 import "context"
 
-// defaultStateChanBufferSize is the default buffer size used for the state change channel.
-const defaultStateChanBufferSize = 5
-
-// SetChanBufferSize sets the buffer size for the state change channel.
-func (fsm *Machine) SetChanBufferSize(size int) {
-	if size < 1 {
-		fsm.logger.Warn("Invalid channel buffer size; must be at least 1", "size", size)
-		return
-	}
-
-	fsm.mutex.RLock()
-	currentBuffer := fsm.channelBufferSize
-	fsm.mutex.RUnlock()
-
-	if size == currentBuffer {
-		fsm.logger.Debug("Channel buffer size is already set to the requested size", "size", size)
-		return
-	}
-
-	fsm.mutex.Lock()
-	fsm.channelBufferSize = size
-	fsm.mutex.Unlock()
-}
-
-// GetStateChan returns a channel that emits the FSM's state whenever it changes.
-// The current state is sent immediately upon subscription. If the channel is not being read,
-// state changes will be dropped, and a warning will be logged.
+// GetStateChan returns a channel that will receive the current state of the FSM immediately.
 func (fsm *Machine) GetStateChan(ctx context.Context) <-chan string {
-	logger := fsm.logger.WithGroup("GetStateChan")
 	if ctx == nil {
-		logger.Warn("Context is nil; this will cause a goroutine leak")
-		ctx = context.Background()
+		fsm.logger.Error("context is nil; cannot create state channel")
+		return nil
 	}
 
-	// Read lock to get a copy of the current state and buffer size, for use later
-	fsm.mutex.RLock()
-	bufferSize := fsm.channelBufferSize
-	initialState := fsm.state
-	fsm.mutex.RUnlock()
+	ch := make(chan string, 1)
+	unsubCallback := fsm.AddSubscriber(ch)
 
-	// Send the current state immediately
-	ch := make(chan string, bufferSize)
-	ch <- initialState
-
-	// Add the channel to the subscribers list
-	fsm.subscriberMutex.Lock()
-	fsm.subscribers[ch] = struct{}{}
-	fsm.subscriberMutex.Unlock()
-
-	// Start a goroutine to monitor the context
 	go func() {
-		logger.Debug("State listener channel started", "bufferSize", bufferSize, "state", initialState)
-		// Wait for context cancellation
+		// block here (in the background) until the context is done
 		<-ctx.Done()
-		// Clean up: remove the subscriber and close the channel
-		fsm.unsubscribe(ch)
-		logger.Debug("State listener channel closed")
+
+		// unsubscribe and close the channel
+		unsubCallback()
+		close(ch)
 	}()
 
 	return ch
 }
 
-// unsubscribe removes a subscriber channel and closes it.
-func (fsm *Machine) unsubscribe(ch chan string) {
+// AddSubscriber adds your channel to the internal list of broadcast targets. It will receive
+// the current state if the channel (if possible), and will also receive future state changes
+// when the FSM state is updated. A callback function is returned that should be called to
+// remove the channel from the list of subscribers when this is no longer needed.
+func (fsm *Machine) AddSubscriber(ch chan string) func() {
 	fsm.subscriberMutex.Lock()
 	defer fsm.subscriberMutex.Unlock()
-	delete(fsm.subscribers, ch)
-	close(ch)
+
+	fsm.subscribers.Store(ch, struct{}{})
+
+	select {
+	case ch <- fsm.GetState():
+		fsm.logger.Debug("Sent initial state to channel")
+	default:
+		fsm.logger.Warn("Unable to write initial state to channel; next state change will be sent instead")
+	}
+
+	return func() {
+		fsm.unsubscribe(ch)
+	}
+}
+
+// unsubscribe removes a channel from the internal list of broadcast targets.
+func (fsm *Machine) unsubscribe(ch chan string) {
+	fsm.subscriberMutex.Lock()
+	fsm.subscribers.Delete(ch)
+	fsm.subscriberMutex.Unlock()
 }
 
 // broadcast sends the new state to all subscriber channels.
@@ -93,17 +74,16 @@ func (fsm *Machine) unsubscribe(ch chan string) {
 // This, and the other subscriber-related methods, use a standard mutex instead of an RWMutex,
 // because the broadcast sends should always be serial, and never concurrent, otherwise the order
 // of state change notifications could be unpredictable.
-func (fsm *Machine) broadcast(newState string) {
-	logger := fsm.logger.WithGroup("broadcast").With("state", newState)
-	fsm.subscriberMutex.Lock()
-	defer fsm.subscriberMutex.Unlock()
-
-	for ch := range fsm.subscribers {
+func (fsm *Machine) broadcast(state string) {
+	logger := fsm.logger.WithGroup("broadcast").With("state", state)
+	fsm.subscribers.Range(func(key, value any) bool {
+		ch := key.(chan string)
 		select {
-		case ch <- newState:
+		case ch <- state:
 			logger.Debug("Sent state to channel")
 		default:
-			logger.Warn("Channel is full; skipping broadcast")
+			logger.Warn("Channel is full; skipping broadcast for subscriber")
 		}
-	}
+		return true // continue iteration
+	})
 }

@@ -1,24 +1,7 @@
-/*
-Copyright 2024 Robert Terhaar <robbyt@robbyt.net>
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package fsm
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -29,19 +12,31 @@ import (
 func TestFSM_GetStatusChan(t *testing.T) {
 	t.Parallel()
 
-	t.Run("Nil context", func(t *testing.T) {
+	t.Run("nil context guard check", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
 
-		statusChan := fsm.GetStateChan(nil)
+		// Create a nil Context variable to test the guard
+		// This approach avoids the linter warning while still testing nil context behavior
+		var nilCtx context.Context
+		
+		statusChan := fsm.GetStateChan(nilCtx)
+		assert.Nil(t, statusChan, "Should return nil when context is nil")
+	})
+
+	t.Run("TODO context", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		statusChan := fsm.GetStateChan(context.TODO())
 		require.NotNil(t, statusChan)
 
+		// With new implementation, initial state should be sent immediately
 		select {
-		case status, ok := <-statusChan:
+		case status := <-statusChan:
 			assert.Equal(t, StatusNew, status)
-			assert.True(t, ok)
 		case <-time.After(time.Second):
-			t.Fatal("Timed out waiting for channel to close")
+			t.Fatal("Timed out waiting for initial state")
 		}
 	})
 
@@ -56,227 +51,335 @@ func TestFSM_GetStatusChan(t *testing.T) {
 		require.NotNil(t, statusChan)
 
 		select {
-		case state, ok := <-statusChan:
-			require.True(t, ok)
-			assert.Equal(t, StatusNew, state)
+		case status := <-statusChan:
+			assert.Equal(t, StatusNew, status)
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for initial state")
+		}
+	})
+
+	t.Run("Channel is closed when context is canceled", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		statusChan := fsm.GetStateChan(ctx)
+		require.NotNil(t, statusChan)
+
+		// First receive the initial state
+		select {
+		case status := <-statusChan:
+			assert.Equal(t, StatusNew, status)
 		case <-time.After(time.Second):
 			t.Fatal("Timed out waiting for initial state")
 		}
 
+		// Cancel the context
 		cancel()
 
+		// The channel should be closed
 		select {
-		case _, ok := <-statusChan:
-			assert.False(t, ok, "Channel should be closed after context is canceled")
+		case status, ok := <-statusChan:
+			assert.False(t, ok, "Channel should be closed")
+			assert.Empty(t, status, "Value should be empty on a closed channel")
 		case <-time.After(time.Second):
 			t.Fatal("Timed out waiting for channel to close")
 		}
-
 	})
 
-	t.Run("State changes are emitted", func(t *testing.T) {
+	t.Run("State transitions are broadcast to subscribers", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		statusChan := fsm.GetStateChan(ctx)
+		// Create two subscribers
+		ch1 := fsm.GetStateChan(ctx)
+		ch2 := fsm.GetStateChan(ctx)
 
-		var receivedStates []string
-		done := make(chan struct{})
-		ready := make(chan struct{})
+		// Consume initial states
+		<-ch1
+		<-ch2
 
-		go func() {
-			close(ready)
-			for state := range statusChan {
-				receivedStates = append(receivedStates, state)
-				if state == StatusError {
-					close(done)
-					return
-				}
-			}
-		}()
-
-		// Wait for the goroutine to start
-		<-ready
-
-		// Perform rapid state transitions
+		// Transition to a new state
 		err = fsm.Transition(StatusBooting)
 		require.NoError(t, err)
 
-		err = fsm.Transition(StatusRunning)
-		require.NoError(t, err)
-
-		err = fsm.Transition(StatusError)
-		require.NoError(t, err)
-
+		// Both channels should receive the new state
 		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("Timed out waiting for state changes")
+		case status := <-ch1:
+			assert.Equal(t, StatusBooting, status)
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for status update on channel 1")
 		}
 
-		expectedStates := []string{StatusNew, StatusBooting, StatusRunning, StatusError}
-		assert.Equal(t, expectedStates, receivedStates)
+		select {
+		case status := <-ch2:
+			assert.Equal(t, StatusBooting, status)
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for status update on channel 2")
+		}
 	})
 
-	t.Run("Multiple subscribers receive updates", func(t *testing.T) {
+	t.Run("AddSubscriber", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
 
-		ctx1, cancel1 := context.WithCancel(context.Background())
-		defer cancel1()
-		ctx2, cancel2 := context.WithCancel(context.Background())
-		defer cancel2()
+		ch := make(chan string, 1)
+		unsub := fsm.AddSubscriber(ch)
+		defer unsub()
 
-		statusChan1 := fsm.GetStateChan(ctx1)
-		statusChan2 := fsm.GetStateChan(ctx2)
+		// Should receive the initial state
+		select {
+		case status := <-ch:
+			assert.Equal(t, StatusNew, status)
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for initial state")
+		}
 
-		require.NotNil(t, statusChan1)
-		require.NotNil(t, statusChan2)
-
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		received1 := []string{}
-		received2 := []string{}
-
-		wg.Add(2)
-
-		go func() {
-			defer wg.Done()
-			for state := range statusChan1 {
-				mu.Lock()
-				received1 = append(received1, state)
-				mu.Unlock()
-				if state == StatusRunning {
-					return
-				}
-			}
-		}()
-
-		go func() {
-			defer wg.Done()
-			for state := range statusChan2 {
-				mu.Lock()
-				received2 = append(received2, state)
-				mu.Unlock()
-				if state == StatusRunning {
-					return
-				}
-			}
-		}()
-
+		// Transition to a new state
 		err = fsm.Transition(StatusBooting)
 		require.NoError(t, err)
 
+		// Should receive the state update
+		select {
+		case status := <-ch:
+			assert.Equal(t, StatusBooting, status)
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for state update")
+		}
+
+		// Unsubscribe
+		unsub()
+
+		// Transition to another state
 		err = fsm.Transition(StatusRunning)
 		require.NoError(t, err)
 
-		wg.Wait()
-
-		mu.Lock()
-		expectedStates := []string{StatusNew, StatusBooting, StatusRunning}
-		assert.Equal(t, expectedStates, received1)
-		assert.Equal(t, expectedStates, received2)
-		mu.Unlock()
+		// Should not receive any update after unsubscribing
+		select {
+		case status := <-ch:
+			t.Fatalf("Received unexpected state update: %s", status)
+		case <-time.After(100 * time.Millisecond):
+			// This is the expected outcome - no state update after unsubscribing
+		}
 	})
-}
 
-func TestFSM_SetChanBufferSize(t *testing.T) {
-	fsm, err := New(nil, StatusNew, TypicalTransitions)
-	require.NoError(t, err)
-	require.Equal(t, defaultStateChanBufferSize, fsm.channelBufferSize, "assume the default buffer size is set upon creation")
+	t.Run("AddSubscriber with full channel", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
 
-	// Change the buffer size before creating subscribers
-	newBufferSize := 1
-	fsm.SetChanBufferSize(newBufferSize)
-	require.Equal(t, newBufferSize, fsm.channelBufferSize, "buffer size should be updated after running SetChanBufferSize")
+		// Create a buffered channel of size 1 and fill it
+		ch := make(chan string, 1)
+		ch <- "existing-value"
 
-	fsm.SetChanBufferSize(-1)
-	require.Equal(t, newBufferSize, fsm.channelBufferSize, "buffer size remains the same if the new size is invalid")
+		// Channel is now full, so initial state won't be sent
+		unsub := fsm.AddSubscriber(ch)
+		defer unsub()
 
-	fsm.SetChanBufferSize(newBufferSize)
-	require.Equal(t, newBufferSize, fsm.channelBufferSize, "buffer size remains the same if the new size is the same as the current size")
+		// Make sure the channel still contains only the original value
+		select {
+		case val := <-ch:
+			assert.Equal(t, "existing-value", val, "Channel should still contain original value")
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("Should be able to read existing value from channel")
+		}
 
-	// Create subscribers after changing buffer size
-	ctx1, cancel1 := context.WithCancel(context.Background())
-	defer cancel1()
-	statusChan1 := fsm.GetStateChan(ctx1)
-	require.NotNil(t, statusChan1)
+		// Now the channel is empty, transition to a new state
+		err = fsm.Transition(StatusBooting)
+		require.NoError(t, err)
 
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	defer cancel2()
-	statusChan2 := fsm.GetStateChan(ctx2)
-	require.NotNil(t, statusChan2)
+		// Should receive the state update now that the channel has space
+		select {
+		case status := <-ch:
+			assert.Equal(t, StatusBooting, status)
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for state update")
+		}
+	})
 
-	// Define a valid sequence of state transitions
-	transitions := []string{
-		StatusBooting,  // From StatusNew
-		StatusRunning,  // From StatusBooting
-		StatusStopping, // From StatusRunning
-		StatusStopped,  // From StatusStopping
-		StatusNew,      // From StatusStopped
-	}
+	t.Run("Multiple subscribers", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
 
-	// Collect states for the first subscriber
-	var received1 []string
-	done1 := make(chan struct{})
-	go func() {
-		for state := range statusChan1 {
-			received1 = append(received1, state)
-			if len(received1) >= newBufferSize {
-				close(done1)
-				return
+		var channels []chan string
+		var unsubscribers []func()
+		numSubscribers := 5
+
+		// Create multiple subscribers
+		for i := 0; i < numSubscribers; i++ {
+			ch := make(chan string, 1)
+			unsub := fsm.AddSubscriber(ch)
+			channels = append(channels, ch)
+			unsubscribers = append(unsubscribers, unsub)
+		}
+
+		// Defer cleanup
+		defer func() {
+			for _, unsub := range unsubscribers {
+				unsub()
+			}
+		}()
+
+		// Consume initial states
+		for i, ch := range channels {
+			select {
+			case status := <-ch:
+				assert.Equal(t, StatusNew, status)
+			case <-time.After(time.Second):
+				t.Fatalf("Timed out waiting for initial state on channel %d", i)
 			}
 		}
-	}()
 
-	// Collect states for the second subscriber
-	var received2 []string
-	done2 := make(chan struct{})
-	go func() {
-		for state := range statusChan2 {
-			received2 = append(received2, state)
-			if len(received2) >= newBufferSize {
-				close(done2)
-				return
+		// Transition to a new state
+		err = fsm.Transition(StatusBooting)
+		require.NoError(t, err)
+
+		// All channels should receive the state update
+		for i, ch := range channels {
+			select {
+			case status := <-ch:
+				assert.Equal(t, StatusBooting, status)
+			case <-time.After(time.Second):
+				t.Fatalf("Timed out waiting for state update on channel %d", i)
 			}
 		}
-	}()
+	})
 
-	// Perform multiple state transitions in the background
-	go func() {
-		for i := 0; i < newBufferSize; i++ {
-			currentState := fsm.GetState()
-			nextState := transitions[i%len(transitions)]
+	t.Run("Broadcast skips full channels", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
 
-			// Check if transition is valid before attempting
-			if _, ok := fsm.allowedTransitions[currentState][nextState]; !ok {
-				// Reset FSM to a valid state
-				err := fsm.SetState(StatusNew)
-				require.NoError(t, err)
-				nextState = StatusBooting
+		// Create a non-buffered channel - we won't read from it
+		// This simulates a slow consumer that's not keeping up
+		nonBufferedCh := make(chan string)
+		nonBufferedUnsub := fsm.AddSubscriber(nonBufferedCh)
+		defer nonBufferedUnsub()
+
+		// Create a normal buffered channel that will receive updates
+		bufferedCh := make(chan string, 2)
+		bufferedUnsub := fsm.AddSubscriber(bufferedCh)
+		defer bufferedUnsub()
+
+		// Read initial state from buffered channel
+		select {
+		case state := <-bufferedCh:
+			assert.Equal(t, StatusNew, state)
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for initial state on buffered channel")
+		}
+
+		// Perform multiple transitions quickly
+		// The non-buffered channel won't be able to keep up, but the FSM shouldn't block
+		for _, state := range []string{StatusBooting, StatusRunning, StatusReloading} {
+			err := fsm.Transition(state)
+			require.NoError(t, err, "Transition should succeed even with blocked channels")
+
+			// Each transition should be received on the buffered channel
+			select {
+			case receivedState := <-bufferedCh:
+				assert.Equal(t, state, receivedState)
+			case <-time.After(time.Second):
+				t.Fatalf("Timed out waiting for state %s on buffered channel", state)
 			}
+		}
 
-			err := fsm.Transition(nextState)
+		// The final state should match our expected state
+		assert.Equal(t, StatusReloading, fsm.GetState(), "Final state should be StatusReloading")
+	})
+
+	t.Run("Check consumer with indirect channel", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		// Create a channel and subscribe
+		statesChan := make(chan string, 3)
+
+		// Monitor states in a separate goroutine
+		statesReceived := make([]string, 0, 3)
+		done := make(chan struct{})
+
+		// Start a goroutine to handle processing the received states
+		go func() {
+			defer close(done)
+			for state := range statesChan {
+				statesReceived = append(statesReceived, state)
+			}
+		}()
+
+		// Subscribe the channel
+		unsub := fsm.AddSubscriber(statesChan)
+
+		// Allow some time for initial state to be received
+		time.Sleep(50 * time.Millisecond)
+
+		// Make state transitions
+		transitions := []string{StatusBooting, StatusRunning}
+		for _, state := range transitions {
+			err = fsm.Transition(state)
 			require.NoError(t, err)
+			time.Sleep(50 * time.Millisecond) // Give time for state to propagate
 		}
-	}()
 
-	select {
-	case <-done1:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timed out waiting for states on subscriber 1")
-	}
+		// Unsubscribe and close the channel
+		unsub()
+		close(statesChan)
 
-	select {
-	case <-done2:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timed out waiting for states on subscriber 2")
-	}
+		// Wait for the goroutine to process all states
+		select {
+		case <-done:
+			// Success
+		case <-time.After(time.Second):
+			t.Fatal("Timed out waiting for goroutine to finish")
+		}
 
-	// Verify the number of received states
-	assert.Len(t, received1, newBufferSize)
-	assert.Len(t, received2, newBufferSize)
+		// Verify all expected states were received
+		expected := []string{StatusNew, StatusBooting, StatusRunning}
+		assert.Equal(t, expected, statesReceived, "Should have received all state transitions")
+
+		// Verify a transition after unsubscribe doesn't affect anything
+		err = fsm.Transition(StatusStopped)
+		require.NoError(t, err)
+		assert.Equal(t, expected, statesReceived, "States shouldn't change after unsubscribe")
+	})
+
+	t.Run("Single state transition", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		// Create several channels
+		numChans := 3
+		stateChan := make([]<-chan string, numChans)
+		for i := 0; i < numChans; i++ {
+			stateChan[i] = fsm.GetStateChan(ctx)
+		}
+
+		// Read all the initial states
+		for i, ch := range stateChan {
+			select {
+			case state := <-ch:
+				assert.Equal(t, StatusNew, state)
+			case <-time.After(time.Second):
+				t.Fatalf("Channel %d never received initial state", i)
+			}
+		}
+
+		// Transition to a new state
+		err = fsm.Transition(StatusBooting)
+		require.NoError(t, err)
+
+		// Verify all subscribers got the state update
+		for i, ch := range stateChan {
+			select {
+			case state := <-ch:
+				assert.Equal(t, StatusBooting, state)
+			case <-time.After(time.Second):
+				t.Fatalf("Channel %d never received state update", i)
+			}
+		}
+	})
 }

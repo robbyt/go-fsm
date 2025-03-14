@@ -14,11 +14,11 @@ func TestNewTransitionWithIndex(t *testing.T) {
 		"StateB": {"StateC", "StateD"},
 	}
 
-	expected := transitionConfigWithIndex{
+	expected := transitionIndex{
 		"StateA": {"StateB": {}, "StateC": {}},
 		"StateB": {"StateC": {}, "StateD": {}},
 	}
 
-	result := newTransitionWithIndex(transitions)
+	result := makeIndex(transitions)
 	assert.Equal(t, expected, result)
 }
