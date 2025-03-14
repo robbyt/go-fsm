@@ -57,7 +57,7 @@ func main() {
 	}()
 
 	// Perform state transitions- they must follow allowed transitions
-    // booting -> running -> stopping -> stopped
+	// booting -> running -> stopping -> stopped
 	if err := machine.Transition(fsm.StatusBooting); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
