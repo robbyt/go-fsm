@@ -56,13 +56,24 @@ func main() {
 		}
 	}()
 
-	// Perform state transitions
+	// Perform state transitions- they must follow allowed transitions
+    // booting -> running -> stopping -> stopped
+	if err := machine.Transition(fsm.StatusBooting); err != nil {
+		logger.Error("transition failed", "error", err)
+		return
+	}
+
 	if err := machine.Transition(fsm.StatusRunning); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
 
 	time.Sleep(time.Second)
+	
+	if err := machine.Transition(fsm.StatusStopping); err != nil {
+		logger.Error("transition failed", "error", err)
+		return
+	}
 	
 	if err := machine.Transition(fsm.StatusStopped); err != nil {
 		logger.Error("transition failed", "error", err)
@@ -137,10 +148,17 @@ go func() {
 	}
 }()
 
-// Alternative: Add a subscriber with custom callback
-unsubscribe := machine.AddSubscriber(func(state string) {
-	fmt.Println("State updated:", state)
-})
+// Alternative: Add a direct subscriber channel
+stateCh := make(chan string, 1)
+unsubscribe := machine.AddSubscriber(stateCh)
+
+// Process state updates in a separate goroutine
+go func() {
+	for state := range stateCh {
+		fmt.Println("State updated:", state)
+	}
+}()
+
 defer unsubscribe() // Call to stop receiving updates
 ```
 
