@@ -13,6 +13,7 @@ env:
   GOCACHE: "/tmp/go-cache"
   GOMODCACHE: "/tmp/go-mod-cache"
 
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -33,7 +34,13 @@ jobs:
         run: go mod tidy --diff
 
       - name: Go test
-        run: go test ./... -cover -race
+        run: go test -coverprofile=unit.coverage.out -cover -race ./...
+      
+      - name: Run codacy-coverage-reporter
+        uses: codacy/codacy-coverage-reporter-action@v1.3.0
+        with:
+          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          coverage-reports: unit.coverage.out
 
       - name: Build example
         run: cd example && go build .
