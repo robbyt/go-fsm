@@ -1,5 +1,6 @@
 # go-fsm
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/1f8808e29fab45daabc49f847effbd7c)](https://app.codacy.com/gh/robbyt/go-fsm?utm_source=github.com&utm_medium=referral&utm_content=robbyt/go-fsm&utm_campaign=Badge_Grade)
 [![Go Reference](https://pkg.go.dev/badge/github.com/robbyt/go-fsm.svg)](https://pkg.go.dev/github.com/robbyt/go-fsm)
 [![Go Report Card](https://goreportcard.com/badge/github.com/robbyt/go-fsm)](https://goreportcard.com/report/github.com/robbyt/go-fsm)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
