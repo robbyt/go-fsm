@@ -33,7 +33,14 @@ jobs:
         run: go mod tidy --diff
 
       - name: Go test
-        run: go test ./... -cover -race
+        run: go test -coverprofile=unit.coverage.out -cover -race ./...
+      
+      - name: Run codacy-coverage-reporter
+        uses: codacy/codacy-coverage-reporter-action@v1.3.0
+        with:
+          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          coverage-reports: unit.coverage.out
+          force-coverage-parser: go
 
       - name: Build example
         run: cd example && go build .
