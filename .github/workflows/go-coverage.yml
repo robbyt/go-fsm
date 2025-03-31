@@ -1,4 +1,4 @@
-name: Go Tests
+name: Go Coverage
 
 on:
   push:
@@ -29,13 +29,12 @@ jobs:
       - name: Display Go version
         run: go version
 
-      - name: go mod tidy (fails if changes are needed)
-        run: go mod tidy --diff
-
       - name: Go test
-        run: go test -cover -race ./...
-
-      - name: Build example
-        run: |
-          cd example
-          go run main.go
+        run: go test -coverprofile=unit.coverage.out -cover github.com/robbyt/go-fsm
+      
+      - name: Run codacy-coverage-reporter
+        uses: codacy/codacy-coverage-reporter-action@v1.3.0
+        with:
+          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          coverage-reports: unit.coverage.out
+          force-coverage-parser: go
