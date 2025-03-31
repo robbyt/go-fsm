@@ -32,18 +32,8 @@ const (
 	StatusUnknown = "StatusUnknown"
 )
 
-func main() {
-	// Define allowed transitions
-	allowed := fsm.TransitionsConfig{
-		StatusOnline:  []string{StatusOffline, StatusUnknown},
-		StatusOffline: []string{StatusOnline, StatusUnknown},
-		StatusUnknown: []string{},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Create a new logger that omits the time attribute
+// newLogger creates a new logger with time attribute omitted
+func newLogger() *slog.Logger {
 	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
@@ -53,33 +43,40 @@ func main() {
 			return a
 		},
 	})
-	logger := slog.New(handler).WithGroup("example")
+	return slog.New(handler).WithGroup("example")
+}
 
-	// Create a new FSM
-	fsm, err := fsm.New(logger.Handler(), StatusOnline, allowed)
-
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
+// getTransitionsConfig returns the allowed state transition configuration
+func getTransitionsConfig() fsm.TransitionsConfig {
+	return fsm.TransitionsConfig{
+		StatusOnline:  []string{StatusOffline, StatusUnknown},
+		StatusOffline: []string{StatusOnline, StatusUnknown},
+		StatusUnknown: []string{},
 	}
+}
 
-	// Create a done channel for synchronization
+// newStateMachine creates a new FSM with the given logger and initial state
+func newStateMachine(logger *slog.Logger, initialState string) (*fsm.Machine, error) {
+	return fsm.New(logger.Handler(), initialState, getTransitionsConfig())
+}
+
+// listenForStateChanges starts a goroutine that listens for state changes
+// Returns a channel that will be closed when the listener exits
+func listenForStateChanges(ctx context.Context, logger *slog.Logger, machine *fsm.Machine) chan struct{} {
 	done := make(chan struct{})
+	listener := machine.GetStateChan(ctx)
 
-	// Listen for state changes, and print them
-	listener := fsm.GetStateChan(ctx)
 	go func() {
 		defer close(done)
 		for {
 			select {
-			case state := <-listener:
-				logger.Info("State change received", "state", state)
-
-				if state == StatusOffline {
-					logger.Info("Received offline state, canceling context...")
-					cancel()
+			case state, ok := <-listener:
+				if !ok {
+					logger.Debug("State channel closed")
 					return
 				}
+
+				logger.Info("State change received", "state", state)
 
 			case <-ctx.Done():
 				logger.Debug("Context done, exiting listener")
@@ -88,17 +85,53 @@ func main() {
 		}
 	}()
 
-	// Transition to a new state after a small delay
-	// to ensure the goroutine is running
-	time.Sleep(50 * time.Millisecond)
-	logger.Debug("Transitioning to offline state")
-	err = fsm.Transition(StatusOffline)
+	return done
+}
+
+// waitForOfflineState waits for the machine to transition to StatusOffline and then cancels the context
+func waitForOfflineState(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger, machine *fsm.Machine) {
+	stateChan := machine.GetStateChan(ctx)
+
+	go func() {
+		for state := range stateChan {
+			if state == StatusOffline {
+				logger.Info("Received offline state, canceling context...")
+				cancel()
+				return
+			}
+		}
+	}()
+}
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := newLogger()
+
+	// Create a new FSM
+	machine, err := newStateMachine(logger, StatusOnline)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
 
-	// Wait for the done signal from the goroutine
+	// Listen and log all state changes
+	done := listenForStateChanges(ctx, logger, machine)
+
+	// Set up a 2nd listener specifically for acting on the offline state
+	waitForOfflineState(ctx, cancel, logger, machine)
+
+	// Transition to StatusOffline after a small delay
+	time.Sleep(100 * time.Millisecond)
+	logger.Debug("Transitioning to offline state")
+	err = machine.Transition(StatusOffline)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
+	// Wait for the done signal from the listner goroutine
 	<-done
 	logger.Info("Done.")
 }
