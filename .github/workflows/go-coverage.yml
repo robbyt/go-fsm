@@ -38,3 +38,19 @@ jobs:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           coverage-reports: unit.coverage.out
           force-coverage-parser: go
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=robbyt_go-fsm
+            -Dsonar.organization=robbyt
+            -Dsonar.go.coverage.reportPaths=unit.coverage.out
+            -Dsonar.sources=.
+            -Dsonar.exclusions=**/*_test.go
+            -Dsonar.tests=.
+            -Dsonar.test.inclusions=**/*_test.go
+            -Dsonar.language=go
+            -Dsonar.sourceEncoding=UTF-8
