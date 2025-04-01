@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Fetch all history for proper SonarQube analysis
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -31,13 +34,6 @@ jobs:
 
       - name: Go test
         run: go test -coverprofile=unit.coverage.out -cover github.com/robbyt/go-fsm
-      
-      - name: Run codacy-coverage-reporter
-        uses: codacy/codacy-coverage-reporter-action@v1.3.0
-        with:
-          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports: unit.coverage.out
-          force-coverage-parser: go
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v5
