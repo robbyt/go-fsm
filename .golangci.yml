@@ -1,0 +1,49 @@
+version: '2'
+
+run:
+  timeout: 5m
+  go: '1.24'
+
+linters:
+  default: standard
+  disable:
+    - godox         # Detects usage of FIXME, TODO and other keywords inside comments
+    - prealloc      # Temporarily disable until slice allocation issues are fixed
+  enable:
+    - bodyclose     # Checks HTTP response body is closed
+    - contextcheck  # Check whether the function uses a non-inherited context
+    - dupl          # Find duplicate code
+    - dupword       # Find duplicate words in comments and strings
+    - errorlint     # Check error handling
+    - misspell      # Find commonly misspelled English words
+    - nilerr        # Finds code that returns nil even if it checks that the error is not nil
+    - nilnil        # Checks that there is no simultaneous return of `nil` error and an invalid value
+    - noctx         # Finds sending http request without context.Context
+    - reassign      # Checks that package variables are not reassigned
+    - tagalign      # Check that struct tags are well aligned
+    - thelper       # Detects test helpers which should start with t.Helper()
+    - unconvert     # Remove unnecessary type conversions
+    - whitespace    # Check for unnecessary whitespace
+  settings:
+    errcheck:
+      check-blank: true
+      # Standard exclusions for common patterns:
+      exclude-functions:
+        # Ignoring error from fmt.Fprintf is almost always okay in HTTP handlers
+        - fmt.Fprintf
+        # Common test library functions that rarely need error checking
+        - (*github.com/stretchr/testify/mock.Mock).Get
+        - (net.Listener).Addr
+        - (sync/atomic.Value).Load
+
+formatters:
+  enable:
+    - gci           # Control Go package import order
+    - gofmt         # Format Go source code
+    - gofumpt       # Stricter Go formatting
+    - goimports     # Check and format imports
+    - golines       # Formats long lines
+
+issues:
+  max-issues-per-linter: 20
+  max-same-issues: 5

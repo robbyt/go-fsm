@@ -54,7 +54,9 @@ func (fsm *Machine) AddSubscriber(ch chan string) func() {
 	case ch <- fsm.GetState():
 		fsm.logger.Debug("Sent initial state to channel")
 	default:
-		fsm.logger.Warn("Unable to write initial state to channel; next state change will be sent instead")
+		fsm.logger.Warn(
+			"Unable to write initial state to channel; next state change will be sent instead",
+		)
 	}
 
 	return func() {

@@ -38,7 +38,6 @@ import (
 	"log/slog"
 	"os"
 	"sync"
-
 	"sync/atomic"
 )
 
@@ -67,7 +66,11 @@ type Machine struct {
 //		StatusError:     {StatusNew, StatusExited},
 //		StatusExited:    {StatusNew},
 //	}
-func New(handler slog.Handler, initialState string, allowedTransitions TransitionsConfig) (*Machine, error) {
+func New(
+	handler slog.Handler,
+	initialState string,
+	allowedTransitions TransitionsConfig,
+) (*Machine, error) {
 	if handler == nil {
 		defaultHandler := slog.NewTextHandler(os.Stdout, nil)
 		handler = defaultHandler.WithGroup("fsm")
@@ -79,7 +82,11 @@ func New(handler slog.Handler, initialState string, allowedTransitions Transitio
 	}
 
 	if _, ok := allowedTransitions[initialState]; !ok {
-		return nil, fmt.Errorf("%w: initial state '%s' is not defined", ErrInvalidState, initialState)
+		return nil, fmt.Errorf(
+			"%w: initial state '%s' is not defined",
+			ErrInvalidState,
+			initialState,
+		)
 	}
 
 	m := &Machine{
@@ -162,7 +169,12 @@ func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
 
 	currentState := fsm.GetState()
 	if currentState != fromState {
-		return fmt.Errorf("%w: current state is '%s', expected '%s'", ErrCurrentStateIncorrect, currentState, fromState)
+		return fmt.Errorf(
+			"%w: current state is '%s', expected '%s'",
+			ErrCurrentStateIncorrect,
+			currentState,
+			fromState,
+		)
 	}
 
 	return fsm.transition(toState)
