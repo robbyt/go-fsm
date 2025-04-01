@@ -62,7 +62,11 @@ func newStateMachine(logger *slog.Logger, initialState string) (*fsm.Machine, er
 
 // listenForStateChanges starts a goroutine that listens for state changes
 // Returns a channel that will be closed when the listener exits
-func listenForStateChanges(ctx context.Context, logger *slog.Logger, machine *fsm.Machine) chan struct{} {
+func listenForStateChanges(
+	ctx context.Context,
+	logger *slog.Logger,
+	machine *fsm.Machine,
+) chan struct{} {
 	done := make(chan struct{})
 	listener := machine.GetStateChan(ctx)
 
@@ -89,7 +93,12 @@ func listenForStateChanges(ctx context.Context, logger *slog.Logger, machine *fs
 }
 
 // waitForOfflineState waits for the machine to transition to StatusOffline and then cancels the context
-func waitForOfflineState(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger, machine *fsm.Machine) {
+func waitForOfflineState(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	logger *slog.Logger,
+	machine *fsm.Machine,
+) {
 	stateChan := machine.GetStateChan(ctx)
 
 	go func() {
