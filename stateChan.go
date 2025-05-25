@@ -20,12 +20,18 @@ import "context"
 
 // GetStateChan returns a channel that will receive the current state of the FSM immediately.
 func (fsm *Machine) GetStateChan(ctx context.Context) <-chan string {
+	return fsm.GetStateChanBuffer(ctx, 1)
+}
+
+// GetStateChanBuffer returns a channel with a configurable buffer size. The current state
+// of the FSM will be sent immediately.
+func (fsm *Machine) GetStateChanBuffer(ctx context.Context, chanBufferSize int) <-chan string {
 	if ctx == nil {
 		fsm.logger.Error("context is nil; cannot create state channel")
 		return nil
 	}
 
-	ch := make(chan string, 1)
+	ch := make(chan string, chanBufferSize)
 	unsubCallback := fsm.AddSubscriber(ch)
 
 	go func() {
@@ -90,7 +96,7 @@ func (fsm *Machine) broadcast(state string) {
 		case ch <- state:
 			logger.Debug("Sent state to channel")
 		default:
-			logger.Warn("Channel is full; skipping broadcast for subscriber")
+			logger.Debug("Channel is full; skipping broadcast for subscriber")
 		}
 		return true // continue iteration
 	})
