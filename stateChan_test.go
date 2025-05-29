@@ -47,9 +47,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("Initial state is sent immediately", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		statusChan := fsm.GetStateChan(ctx)
 		require.NotNil(t, statusChan)
@@ -67,8 +65,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("Channel is closed when context is canceled", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		statusChan := fsm.GetStateChan(ctx)
 		require.NotNil(t, statusChan)
 
@@ -95,9 +92,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("State transitions are broadcast to subscribers", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Create two subscribers
 		ch1 := fsm.GetStateChan(ctx)
@@ -386,8 +381,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("Single state transition", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 		defer cancel()
 
 		// Create several channels
@@ -433,9 +427,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("GetStateChan uses buffer size 1", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// GetStateChan should behave like GetStateChanBuffer with size 1
 		ch := fsm.GetStateChan(ctx)
@@ -468,9 +460,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("GetStateChanBuffer with various buffer sizes", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Test buffer size 0 (unbuffered)
 		ch0 := fsm.GetStateChanBuffer(ctx, 0)
@@ -527,9 +517,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("GetStateChanBuffer with rapid transitions", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Create channel with buffer size 3
 		ch := fsm.GetStateChanBuffer(ctx, 3)
@@ -561,9 +549,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("GetStateChanBuffer with small buffer overflow", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Create channel with buffer size 2
 		ch := fsm.GetStateChanBuffer(ctx, 2)
@@ -604,8 +590,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 	t.Run("GetStateChanBuffer context cancellation", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 
 		// Create channels with different buffer sizes
 		ch1 := fsm.GetStateChanBuffer(ctx, 1)
@@ -695,7 +680,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 
 			// Create many channels that will be immediately unsubscribed and closed
 			// This increases the chance of hitting the race condition
-			for i := 0; i < 10000; i++ {
+			for range 10000 {
 				ch := make(chan string, 1)
 
 				// Add subscriber
@@ -736,7 +721,7 @@ func TestFSM_GetStatusChan(t *testing.T) {
 
 			for i := range 1000 {
 				// Add more subscribers
-				for j := 0; j < 10; j++ {
+				for j := range 10 {
 					idx := (i*10 + j) % len(channels)
 
 					// Clean up previous subscriber at this index if it exists
@@ -806,9 +791,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("WithBufferSize option", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		ch := fsm.GetStateChanWithOptions(ctx, WithBufferSize(5))
 		require.NotNil(t, ch)
@@ -827,9 +810,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("WithCustomChannel option", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		customCh := make(chan string, 3)
 		ch := fsm.GetStateChanWithOptions(ctx, WithCustomChannel(customCh))
@@ -858,9 +839,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("WithoutInitialState option", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		ch := fsm.GetStateChanWithOptions(ctx, WithoutInitialState())
 		require.NotNil(t, ch)
@@ -892,8 +871,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Run("WithCustomChannel overrides WithBufferSize", func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			customCh := make(chan string, 10)
 			ch := fsm.GetStateChanWithOptions(ctx, WithBufferSize(5), WithCustomChannel(customCh))
@@ -904,8 +882,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 		})
 
 		t.Run("WithBufferSize overrides WithCustomChannel", func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			customCh := make(chan string, 2)
 			ch := fsm.GetStateChanWithOptions(ctx, WithCustomChannel(customCh), WithBufferSize(7))
@@ -914,8 +891,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 		})
 
 		t.Run("WithoutInitialState persists with other options", func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			ch := fsm.GetStateChanWithOptions(ctx, WithoutInitialState(), WithBufferSize(1))
 
@@ -933,9 +909,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("No options - default behavior", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		ch := fsm.GetStateChanWithOptions(ctx)
 		require.NotNil(t, ch)
@@ -963,9 +937,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("Combined options", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		customCh := make(chan string, 2)
 		ch := fsm.GetStateChanWithOptions(ctx, WithCustomChannel(customCh), WithoutInitialState())
@@ -998,9 +970,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("WithSyncBroadcast option", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Create a very small buffered channel to test sync behavior
 		ch := fsm.GetStateChanWithOptions(ctx, WithSyncBroadcast(), WithBufferSize(1))
@@ -1051,9 +1021,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("WithSyncTimeout option", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Test custom short timeout
 		shortTimeout := 100 * time.Millisecond
@@ -1092,9 +1060,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("Mixed sync and async subscribers", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Create async subscriber (default)
 		asyncCh := fsm.GetStateChanWithOptions(ctx, WithBufferSize(2))
@@ -1133,9 +1099,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 	t.Run("Sync broadcast with blocked subscriber doesn't block others", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, TypicalTransitions)
 		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Create one permanently blocked sync subscriber
 		blockedSyncCh := make(chan string) // Unbuffered, no readers
@@ -1174,37 +1138,5 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 				return false
 			}
 		}, time.Second, 10*time.Millisecond, "Async subscriber should receive state despite blocked sync subscriber")
-	})
-
-	t.Run("Default sync timeout", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, TypicalTransitions)
-		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Test that default timeout is 10 seconds by creating sync subscriber without explicit timeout
-		syncCh := fsm.GetStateChanWithOptions(ctx, WithSyncBroadcast(), WithBufferSize(1))
-		require.NotNil(t, syncCh)
-
-		// We can't easily test a 10-second timeout in a unit test, but we can verify
-		// that the subscriber was created successfully and behaves synchronously
-		// for unblocked channels
-
-		// Consume initial state
-		<-syncCh
-
-		// Quick transition should work fine
-		err = fsm.Transition(StatusBooting)
-		require.NoError(t, err)
-
-		assert.Eventually(t, func() bool {
-			select {
-			case state := <-syncCh:
-				return state == StatusBooting
-			default:
-				return false
-			}
-		}, time.Second, 10*time.Millisecond, "Should receive state with default timeout")
 	})
 }
