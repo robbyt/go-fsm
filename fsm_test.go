@@ -481,3 +481,68 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to initialize FSM with restored state ''")
 	})
 }
+
+func TestFSM_GetAllStates(t *testing.T) {
+	t.Parallel()
+
+	t.Run("GetAllStates with TypicalTransitions", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		states := fsm.GetAllStates()
+
+		expectedStates := []string{
+			StatusNew, StatusBooting, StatusRunning, StatusReloading,
+			StatusStopping, StatusStopped, StatusError, StatusUnknown,
+		}
+
+		assert.ElementsMatch(t, expectedStates, states)
+		assert.Len(t, states, len(expectedStates))
+	})
+
+	t.Run("GetAllStates with custom transitions", func(t *testing.T) {
+		customTransitions := TransitionsConfig{
+			"StateA": {"StateB", "StateC"},
+			"StateB": {"StateC"},
+			"StateC": {"StateA"},
+		}
+
+		fsm, err := New(nil, "StateA", customTransitions)
+		require.NoError(t, err)
+
+		states := fsm.GetAllStates()
+		expectedStates := []string{"StateA", "StateB", "StateC"}
+
+		assert.ElementsMatch(t, expectedStates, states)
+		assert.Len(t, states, 3)
+	})
+
+	t.Run("GetAllStates with single state", func(t *testing.T) {
+		singleStateTransitions := TransitionsConfig{
+			"OnlyState": {},
+		}
+
+		fsm, err := New(nil, "OnlyState", singleStateTransitions)
+		require.NoError(t, err)
+
+		states := fsm.GetAllStates()
+		expectedStates := []string{"OnlyState"}
+
+		assert.ElementsMatch(t, expectedStates, states)
+		assert.Len(t, states, 1)
+	})
+
+	t.Run("GetAllStates returns copy not reference", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		states1 := fsm.GetAllStates()
+		states2 := fsm.GetAllStates()
+
+		assert.ElementsMatch(t, states1, states2)
+
+		// Modify one slice to ensure they're independent
+		states1[0] = "ModifiedState"
+		assert.NotEqual(t, states1[0], states2[0])
+	})
+}

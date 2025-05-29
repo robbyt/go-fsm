@@ -207,6 +207,15 @@ func (fsm *Machine) GetState() string {
 	return fsm.state.Load().(string)
 }
 
+// GetAllStates returns all allowed states that have been added to this FSM
+func (fsm *Machine) GetAllStates() []string {
+	states := make([]string, 0, len(fsm.transitionIndex))
+	for state := range fsm.transitionIndex {
+		states = append(states, state)
+	}
+	return states
+}
+
 // setState updates the FSM's state and notifies all subscribers about the state change.
 // It assumes that the caller has already acquired the necessary write lock (fsm.mutex).
 func (fsm *Machine) setState(state string) {
