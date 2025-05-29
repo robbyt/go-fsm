@@ -799,3 +799,412 @@ func TestFSM_GetStatusChan(t *testing.T) {
 		// 3. OR we directly observe a panic from a closed channel (if race detector is not used)
 	})
 }
+
+func TestFSM_GetStateChanWithOptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("WithBufferSize option", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ch := fsm.GetStateChanWithOptions(ctx, WithBufferSize(5))
+		require.NotNil(t, ch)
+		assert.Equal(t, 5, cap(ch))
+
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-ch:
+				return state == StatusNew
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Should receive initial state")
+	})
+
+	t.Run("WithCustomChannel option", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		customCh := make(chan string, 3)
+		ch := fsm.GetStateChanWithOptions(ctx, WithCustomChannel(customCh))
+
+		// Verify it's the same channel by checking capacity
+		assert.Equal(t, cap(customCh), cap(ch))
+
+		// First consume the initial state that was automatically sent
+		select {
+		case initialState := <-ch:
+			assert.Equal(t, StatusNew, initialState)
+		default:
+			t.Fatal("Should receive initial state")
+		}
+
+		// Now test that it's the same channel by sending a test message
+		customCh <- "test-message"
+		select {
+		case msg := <-ch:
+			assert.Equal(t, "test-message", msg)
+		default:
+			t.Fatal("Should be able to read test message from returned channel")
+		}
+	})
+
+	t.Run("WithoutInitialState option", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ch := fsm.GetStateChanWithOptions(ctx, WithoutInitialState())
+		require.NotNil(t, ch)
+
+		assert.Never(t, func() bool {
+			select {
+			case <-ch:
+				return true
+			default:
+				return false
+			}
+		}, 100*time.Millisecond, 10*time.Millisecond, "Should not receive initial state")
+
+		err = fsm.Transition(StatusBooting)
+		require.NoError(t, err)
+
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-ch:
+				return state == StatusBooting
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Should receive state transition")
+	})
+
+	t.Run("Option precedence", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		t.Run("WithCustomChannel overrides WithBufferSize", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			customCh := make(chan string, 10)
+			ch := fsm.GetStateChanWithOptions(ctx, WithBufferSize(5), WithCustomChannel(customCh))
+
+			// Verify it's the same channel by checking capacity
+			assert.Equal(t, cap(customCh), cap(ch))
+			assert.Equal(t, 10, cap(ch))
+		})
+
+		t.Run("WithBufferSize overrides WithCustomChannel", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			customCh := make(chan string, 2)
+			ch := fsm.GetStateChanWithOptions(ctx, WithCustomChannel(customCh), WithBufferSize(7))
+			assert.NotEqual(t, customCh, ch)
+			assert.Equal(t, 7, cap(ch))
+		})
+
+		t.Run("WithoutInitialState persists with other options", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ch := fsm.GetStateChanWithOptions(ctx, WithoutInitialState(), WithBufferSize(1))
+
+			assert.Never(t, func() bool {
+				select {
+				case <-ch:
+					return true
+				default:
+					return false
+				}
+			}, 100*time.Millisecond, 10*time.Millisecond, "Should not receive initial state")
+		})
+	})
+
+	t.Run("No options - default behavior", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ch := fsm.GetStateChanWithOptions(ctx)
+		require.NotNil(t, ch)
+		assert.Equal(t, 1, cap(ch))
+
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-ch:
+				return state == StatusNew
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Should receive initial state")
+	})
+
+	t.Run("Nil context guard", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		var nilCtx context.Context
+		ch := fsm.GetStateChanWithOptions(nilCtx, WithBufferSize(10))
+		assert.Nil(t, ch)
+	})
+
+	t.Run("Combined options", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		customCh := make(chan string, 2)
+		ch := fsm.GetStateChanWithOptions(ctx, WithCustomChannel(customCh), WithoutInitialState())
+
+		// Verify it's the same channel by checking capacity
+		assert.Equal(t, cap(customCh), cap(ch))
+
+		assert.Never(t, func() bool {
+			select {
+			case <-ch:
+				return true
+			default:
+				return false
+			}
+		}, 100*time.Millisecond, 10*time.Millisecond, "Should not receive initial state")
+
+		err = fsm.Transition(StatusBooting)
+		require.NoError(t, err)
+
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-ch:
+				return state == StatusBooting
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Should receive state transition")
+	})
+
+	t.Run("WithSyncBroadcast option", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create a very small buffered channel to test sync behavior
+		ch := fsm.GetStateChanWithOptions(ctx, WithSyncBroadcast(), WithBufferSize(1))
+		require.NotNil(t, ch)
+
+		// Consume initial state
+		select {
+		case state := <-ch:
+			assert.Equal(t, StatusNew, state)
+		case <-time.After(time.Second):
+			t.Fatal("Should receive initial state")
+		}
+
+		// Fill the channel buffer
+		ch2 := make(chan string, 1)
+		ch2 <- "blocking-message"
+
+		// Test that sync broadcast waits (doesn't drop messages)
+		syncCh := fsm.GetStateChanWithOptions(ctx, WithSyncBroadcast(), WithCustomChannel(ch2))
+
+		// Start a goroutine that will read from the channel after a delay
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			<-syncCh // Remove the blocking message
+		}()
+
+		// This transition should succeed even though channel was initially full
+		// because sync broadcast waits
+		start := time.Now()
+		err = fsm.Transition(StatusBooting)
+		duration := time.Since(start)
+
+		require.NoError(t, err)
+		// Should have taken some time (at least 50ms) because it waited
+		assert.Greater(t, duration, 40*time.Millisecond, "Sync broadcast should have waited")
+
+		// Should eventually receive the state
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-syncCh:
+				return state == StatusBooting
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Should receive state after channel was unblocked")
+	})
+
+	t.Run("WithSyncTimeout option", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Test custom short timeout
+		shortTimeout := 100 * time.Millisecond
+
+		// Create a channel that will be permanently blocked
+		blockedCh := make(chan string) // Unbuffered, no readers
+		ch := fsm.GetStateChanWithOptions(ctx,
+			WithSyncBroadcast(),
+			WithCustomChannel(blockedCh),
+			WithSyncTimeout(shortTimeout),
+			WithoutInitialState(), // Don't send initial state to avoid blocking
+		)
+		require.NotNil(t, ch)
+
+		// This transition should timeout after shortTimeout
+		start := time.Now()
+		err = fsm.Transition(StatusBooting)
+		duration := time.Since(start)
+
+		require.NoError(t, err) // Transition itself should succeed
+		// Should have taken approximately the timeout duration
+		assert.Greater(
+			t,
+			duration,
+			shortTimeout-10*time.Millisecond,
+			"Should have waited for timeout",
+		)
+		assert.Less(
+			t,
+			duration,
+			shortTimeout+50*time.Millisecond,
+			"Should not wait much longer than timeout",
+		)
+	})
+
+	t.Run("Mixed sync and async subscribers", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create async subscriber (default)
+		asyncCh := fsm.GetStateChanWithOptions(ctx, WithBufferSize(2))
+
+		// Create sync subscriber
+		syncCh := fsm.GetStateChanWithOptions(ctx, WithSyncBroadcast(), WithBufferSize(2))
+
+		// Consume initial states
+		<-asyncCh
+		<-syncCh
+
+		// Transition - both should receive it
+		err = fsm.Transition(StatusBooting)
+		require.NoError(t, err)
+
+		// Both channels should receive the update
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-asyncCh:
+				return state == StatusBooting
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Async subscriber should receive state")
+
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-syncCh:
+				return state == StatusBooting
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Sync subscriber should receive state")
+	})
+
+	t.Run("Sync broadcast with blocked subscriber doesn't block others", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create one permanently blocked sync subscriber
+		blockedSyncCh := make(chan string) // Unbuffered, no readers
+		fsm.GetStateChanWithOptions(ctx,
+			WithSyncBroadcast(),
+			WithCustomChannel(blockedSyncCh),
+			WithoutInitialState(),
+			WithSyncTimeout(50*time.Millisecond), // Short timeout for faster test
+		)
+
+		// Create a normal async subscriber that should not be blocked
+		asyncCh := fsm.GetStateChanWithOptions(ctx, WithBufferSize(2))
+		<-asyncCh // Consume initial state
+
+		// This should complete after the sync timeout (50ms) since we wait for all sync broadcasts
+		start := time.Now()
+		err = fsm.Transition(StatusBooting)
+		transitionDuration := time.Since(start)
+
+		require.NoError(t, err)
+		// Transition should complete around the timeout duration (sync broadcasts complete in parallel)
+		assert.Greater(t, transitionDuration, 40*time.Millisecond, "Should wait for sync timeout")
+		assert.Less(
+			t,
+			transitionDuration,
+			70*time.Millisecond,
+			"Should not wait much longer than timeout",
+		)
+
+		// Async subscriber should still receive the update
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-asyncCh:
+				return state == StatusBooting
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Async subscriber should receive state despite blocked sync subscriber")
+	})
+
+	t.Run("Default sync timeout", func(t *testing.T) {
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Test that default timeout is 10 seconds by creating sync subscriber without explicit timeout
+		syncCh := fsm.GetStateChanWithOptions(ctx, WithSyncBroadcast(), WithBufferSize(1))
+		require.NotNil(t, syncCh)
+
+		// We can't easily test a 10-second timeout in a unit test, but we can verify
+		// that the subscriber was created successfully and behaves synchronously
+		// for unblocked channels
+
+		// Consume initial state
+		<-syncCh
+
+		// Quick transition should work fine
+		err = fsm.Transition(StatusBooting)
+		require.NoError(t, err)
+
+		assert.Eventually(t, func() bool {
+			select {
+			case state := <-syncCh:
+				return state == StatusBooting
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Should receive state with default timeout")
+	})
+}
