@@ -159,21 +159,18 @@ go func() {
 	}
 }()
 
-// Use sync broadcast with 10s timeout
+// Use sync broadcast with a 10s timeout (WithSyncBroadcast is a shortcut for settings a 10s timeout)
 syncChan := machine.GetStateChanWithOptions(ctx, fsm.WithSyncBroadcast())
 
-// Use sync broadcast with custom timeout
-timeoutChan := machine.GetStateChanWithOptions(ctx,
-	fsm.WithSyncBroadcast(),
-	fsm.WithSyncTimeout(5*time.Second),
-)
+// Use sync broadcast with 1hr custom timeout
+timeoutChan := machine.GetStateChanWithOptions(ctx, fsm.WithSyncTimeout(1*time.Hour))
 
 // Use infinite blocking (never times out)
 infiniteChan := machine.GetStateChanWithOptions(ctx,
 	fsm.WithSyncTimeout(-1),
 )
 
-// Process all state changes (blocks transitions until read)
+// Read and print all state changes from the channel
 go func() {
 	for state := range syncChan {
 		fmt.Println("State:", state)
