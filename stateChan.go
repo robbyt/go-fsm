@@ -23,7 +23,8 @@ import (
 )
 
 const (
-	defaultSyncTimeout = 10 * time.Second
+	defaultAsyncTimeout = 0
+	defaultSyncTimeout  = 10 * time.Second
 )
 
 // SubscriberOption configures subscriber behavior
@@ -33,7 +34,6 @@ type SubscriberOption func(*subscriberConfig)
 type subscriberConfig struct {
 	sendInitial   bool
 	customChannel chan string
-	syncBroadcast bool
 	syncTimeout   time.Duration
 }
 
@@ -62,7 +62,7 @@ func WithCustomChannel(ch chan string) SubscriberOption {
 // is delivered to the channel, rather than dropping messages for full channels
 func WithSyncBroadcast() SubscriberOption {
 	return func(config *subscriberConfig) {
-		config.syncBroadcast = true
+		config.syncTimeout = defaultSyncTimeout
 	}
 }
 
@@ -85,7 +85,7 @@ func (fsm *Machine) GetStateChanWithOptions(
 ) <-chan string {
 	config := &subscriberConfig{
 		sendInitial: true,
-		syncTimeout: defaultSyncTimeout,
+		syncTimeout: defaultAsyncTimeout,
 	}
 
 	for _, opt := range opts {
@@ -147,7 +147,7 @@ func (fsm *Machine) GetStateChanBuffer(ctx context.Context, chanBufferSize int) 
 func (fsm *Machine) AddSubscriber(ch chan string) func() {
 	config := &subscriberConfig{
 		sendInitial: true,
-		syncTimeout: defaultSyncTimeout,
+		syncTimeout: defaultAsyncTimeout,
 	}
 	return fsm.addSubscriberWithConfig(ch, config)
 }
@@ -183,8 +183,9 @@ func (fsm *Machine) unsubscribe(ch chan string) {
 }
 
 // broadcast sends the new state to all subscriber channels.
-// For async subscribers, if a channel is full, the state change is skipped for that channel, and a warning is logged.
-// For sync subscribers, the broadcast blocks until the message is delivered or times out after 10 seconds.
+// Subscribers with negative timeout block indefinitely until delivered.
+// Subscribers with timeout=0 behave asynchronously (drop messages if channel is full).
+// Subscribers with positive timeout block until delivered or timeout.
 // This, and the other subscriber-related methods, use a standard mutex instead of an RWMutex,
 // because the broadcast sends should always be serial, and never concurrent, otherwise the order
 // of state change notifications could be unpredictable.
@@ -208,21 +209,15 @@ func (fsm *Machine) broadcast(state string) {
 			return true
 		}
 
-		if config.syncBroadcast {
-			// Handle sync broadcast with timeout in parallel goroutines
+		if config.syncTimeout < 0 {
+			// Handle infinite blocking broadcast
 			wg.Add(1)
 			go func(ch chan string) {
 				defer wg.Done()
-				select {
-				case ch <- state:
-					logger.Debug("State delivered to synchronous subscriber")
-				case <-time.After(config.syncTimeout):
-					logger.Warn("Synchronous subscriber blocked; state delivery timed out",
-						"timeout", config.syncTimeout,
-						"channel_capacity", cap(ch), "channel_length", len(ch))
-				}
+				ch <- state
+				logger.Debug("State delivered to blocking subscriber")
 			}(ch)
-		} else {
+		} else if config.syncTimeout == 0 {
 			// Handle async broadcast (non-blocking)
 			select {
 			case ch <- state:
@@ -231,6 +226,20 @@ func (fsm *Machine) broadcast(state string) {
 				logger.Debug("Asynchronous subscriber channel full; state delivery skipped",
 					"channel_capacity", cap(ch), "channel_length", len(ch))
 			}
+		} else {
+			// Handle sync broadcast with positive timeout
+			wg.Add(1)
+			go func(ch chan string, timeout time.Duration) {
+				defer wg.Done()
+				select {
+				case ch <- state:
+					logger.Debug("State delivered to synchronous subscriber")
+				case <-time.After(timeout):
+					logger.Warn("Synchronous subscriber blocked; state delivery timed out",
+						"timeout", timeout,
+						"channel_capacity", cap(ch), "channel_length", len(ch))
+				}
+			}(ch, config.syncTimeout)
 		}
 		return true // continue iteration
 	})
