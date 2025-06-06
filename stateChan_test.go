@@ -1139,4 +1139,44 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 			}
 		}, time.Second, 10*time.Millisecond, "Async subscriber should receive state despite blocked sync subscriber")
 	})
+
+	t.Run("Negative timeout blocks indefinitely", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("Skipping in short mode")
+		}
+
+		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		require.NoError(t, err)
+		ctx := t.Context()
+
+		// Create a permanently blocked sync subscriber with negative timeout
+		blockedSyncCh := make(chan string) // Unbuffered, no readers
+		fsm.GetStateChanWithOptions(ctx,
+			WithSyncTimeout(-1), // Negative timeout should block indefinitely
+			WithCustomChannel(blockedSyncCh),
+			WithoutInitialState(),
+		)
+
+		// Create a normal async subscriber that should not be blocked
+		asyncCh := fsm.GetStateChanWithOptions(ctx, WithBufferSize(2))
+		<-asyncCh // Consume initial state
+
+		// Start transition in a goroutine since it should block indefinitely
+		transitionDone := make(chan struct{})
+		go func() {
+			defer close(transitionDone)
+			err := fsm.Transition(StatusBooting)
+			require.NoError(t, err)
+		}()
+
+		// Transition should never complete within 11 seconds due to negative timeout
+		assert.Never(t, func() bool {
+			select {
+			case <-transitionDone:
+				return true
+			default:
+				return false
+			}
+		}, 11*time.Second, 100*time.Millisecond, "Transition should not complete with negative timeout blocking indefinitely")
+	})
 }
