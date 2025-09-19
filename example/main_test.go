@@ -79,10 +79,10 @@ func TestNewStateMachine(t *testing.T) {
 			machine, err := newStateMachine(logger, tc.initialState)
 
 			if tc.expectedError {
-				assert.Error(t, err, "Expected an error with invalid initial state")
+				require.Error(t, err, "Expected an error with invalid initial state")
 				assert.Nil(t, machine, "Machine should be nil when error occurs")
 			} else {
-				assert.NoError(t, err, "Should not error with valid initial state")
+				require.NoError(t, err, "Should not error with valid initial state")
 				assert.NotNil(t, machine, "Machine should not be nil with valid initial state")
 				assert.Equal(t, tc.initialState, machine.GetState(),
 					"Machine should have the correct initial state")

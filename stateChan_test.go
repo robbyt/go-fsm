@@ -1166,7 +1166,7 @@ func TestFSM_GetStateChanWithOptions(t *testing.T) {
 		go func() {
 			defer close(transitionDone)
 			err := fsm.Transition(StatusBooting)
-			require.NoError(t, err)
+			assert.NoError(t, err)
 		}()
 
 		// Transition should never complete within 11 seconds due to negative timeout

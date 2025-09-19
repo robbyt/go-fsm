@@ -19,14 +19,14 @@ func TestFSM(t *testing.T) {
 		fsm, err := New(nil, "bla", TypicalTransitions)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrInvalidState) // More specific check
+		require.ErrorIs(t, err, ErrInvalidState) // More specific check
 	})
 
 	t.Run("NewFSM with nil allowedTransitions", func(t *testing.T) {
 		fsm, err := New(nil, StatusNew, nil)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrAvailableStateData) // More specific check
+		require.ErrorIs(t, err, ErrAvailableStateData) // More specific check
 	})
 
 	t.Run("GetState and SetState", func(t *testing.T) {
@@ -41,7 +41,7 @@ func TestFSM(t *testing.T) {
 
 		// Test setting an invalid state (not defined as a source state)
 		err = fsm.SetState("invalid_state")
-		assert.ErrorIs(t, err, ErrInvalidState)
+		require.ErrorIs(t, err, ErrInvalidState)
 		assert.Equal(t, StatusRunning, fsm.GetState()) // State should not change
 	})
 
@@ -84,9 +84,9 @@ func TestFSM(t *testing.T) {
 				err = fsm.Transition(tc.toState)
 
 				if tc.expectedErr != nil {
-					assert.ErrorIs(t, err, tc.expectedErr)
+					require.ErrorIs(t, err, tc.expectedErr)
 				} else {
-					assert.NoError(t, err)
+					require.NoError(t, err)
 				}
 
 				assert.Equal(t, tc.expectedState, fsm.GetState())
@@ -137,9 +137,9 @@ func TestFSM(t *testing.T) {
 				err = fsm.TransitionIfCurrentState(tc.fromState, tc.toState)
 
 				if tc.expectedErr != nil {
-					assert.ErrorIs(t, err, tc.expectedErr)
+					require.ErrorIs(t, err, tc.expectedErr)
 				} else {
-					assert.NoError(t, err)
+					require.NoError(t, err)
 				}
 
 				assert.Equal(t, tc.expectedState, fsm.GetState())
@@ -157,7 +157,7 @@ func TestFSM_Transition_DisallowedStateChange(t *testing.T) {
 	// Attempt transition to a state not allowed from StatusNew
 	err = fsm.Transition(StatusRunning)
 
-	assert.ErrorIs(t, err, ErrInvalidStateTransition)
+	require.ErrorIs(t, err, ErrInvalidStateTransition)
 	assert.Equal(t, StatusNew, fsm.GetState()) // State remains unchanged
 }
 
@@ -177,7 +177,7 @@ func TestFSM_Transition_ModifiedAllowedTransitions(t *testing.T) {
 	t.Run("Transition with removed allowedTransitions", func(t *testing.T) {
 		err := fsm.Transition(StatusBooting)
 		// Now that StatusNew is not in the index, the error should be ErrInvalidState
-		assert.ErrorIs(t, err, ErrInvalidState)
+		require.ErrorIs(t, err, ErrInvalidState)
 		assert.Equal(t, StatusNew, fsm.GetState()) // State remains unchanged
 	})
 }
@@ -417,7 +417,7 @@ func TestFSM_JSONPersistence(t *testing.T) {
 
 		// Optional: Verify transitions still work on the restored machine
 		err = fsmRestored.Transition(StatusReloading)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, StatusReloading, fsmRestored.GetState())
 	})
 
@@ -441,7 +441,7 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		assert.Nil(t, fsmRestored)
 		// NewFromJSON calls New, which validates the initial state.
 		// Expect ErrInvalidState wrapped in the NewFromJSON error message.
-		assert.ErrorIs(t, err, ErrInvalidState)
+		require.ErrorIs(t, err, ErrInvalidState)
 		assert.Contains(
 			t,
 			err.Error(),
@@ -461,7 +461,7 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		require.Error(t, err)
 		assert.Nil(t, fsmRestored)
 		// NewFromJSON calls New, which returns ErrAvailableStateData for nil transitions.
-		assert.ErrorIs(t, err, ErrAvailableStateData)
+		require.ErrorIs(t, err, ErrAvailableStateData)
 		assert.Contains(
 			t,
 			err.Error(),
@@ -477,7 +477,7 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		// The subsequent call to New("", TypicalTransitions) should fail validation.
 		require.Error(t, err)
 		assert.Nil(t, fsmRestored)
-		assert.ErrorIs(t, err, ErrInvalidState) // New should return ErrInvalidState for ""
+		require.ErrorIs(t, err, ErrInvalidState) // New should return ErrInvalidState for ""
 		assert.Contains(t, err.Error(), "failed to initialize FSM with restored state ''")
 	})
 }
