@@ -16,12 +16,16 @@ limitations under the License.
 
 package fsm
 
+import (
+	"maps"
+	"slices"
+)
+
 // TransitionsConfig represents a configuration for allowed transitions the FSM.
 type TransitionsConfig map[string][]string
 
 // GetAllStates returns all unique states defined in the transitions configuration.
 // This includes both source states (keys) and target states (values).
-// TODO use maps.Collect to simplify this
 func (tc TransitionsConfig) GetAllStates() []string {
 	stateSet := make(map[string]struct{})
 
@@ -37,13 +41,7 @@ func (tc TransitionsConfig) GetAllStates() []string {
 		}
 	}
 
-	// Convert set to slice
-	states := make([]string, 0, len(stateSet))
-	for state := range stateSet {
-		states = append(states, state)
-	}
-
-	return states
+	return slices.Collect(maps.Keys(stateSet))
 }
 
 // transitionIndex is a map of maps, the second map is like a set, used for

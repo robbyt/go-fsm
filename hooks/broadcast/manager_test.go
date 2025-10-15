@@ -280,34 +280,53 @@ func TestBroadcast_AsyncMode(t *testing.T) {
 func TestBroadcast_SyncMode(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	synctest.Test(t, func(t *testing.T) {
+		currentState := "StateA"
+		getState := func() string { return currentState }
+		manager := broadcast.NewManager(newTestLogger(), getState)
 
-	// Sync mode with 500ms timeout
-	ch := manager.GetStateChanWithOptions(t.Context(),
-		broadcast.WithSyncTimeout(500*time.Millisecond),
-		broadcast.WithBufferSize(1),
-	)
+		// Sync mode with 500ms timeout
+		ch := manager.GetStateChanWithOptions(t.Context(),
+			broadcast.WithSyncTimeout(500*time.Millisecond),
+			broadcast.WithBufferSize(1),
+		)
 
-	// Drain initial state
-	<-ch
+		// Drain initial state
+		<-ch
 
-	// Start goroutine to consume after delay
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		<-ch // Consume StateB
-		<-ch // Consume StateC
-	}()
+		// Fill the channel buffer
+		manager.Broadcast("StateB")
 
-	// Broadcast should block briefly until consumed
-	start := time.Now()
-	manager.Broadcast("StateB")
-	manager.Broadcast("StateC")
-	elapsed := time.Since(start)
+		// Start goroutine to broadcast StateC (will block because channel is full)
+		broadcastDone := false
+		go func() {
+			manager.Broadcast("StateC")
+			broadcastDone = true
+		}()
 
-	// Should have blocked for at least 100ms (consumer delay)
-	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
+		// Wait for broadcast to block
+		synctest.Wait()
+		require.False(t, broadcastDone, "Broadcast should be blocked until channel is consumed")
+
+		// Consume StateB from the channel in a goroutine
+		consumedState := ""
+		go func() {
+			consumedState = <-ch
+		}()
+
+		// Wait for consumption and broadcast to complete
+		synctest.Wait()
+
+		// Verify StateB was consumed
+		assert.Equal(t, "StateB", consumedState)
+
+		// Broadcast should now have completed
+		require.True(t, broadcastDone, "Broadcast should have completed after channel was consumed")
+
+		// Verify StateC is in the channel
+		state := <-ch
+		assert.Equal(t, "StateC", state)
+	})
 }
 
 func TestBroadcast_SyncMode_Timeout(t *testing.T) {

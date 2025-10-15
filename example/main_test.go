@@ -19,7 +19,7 @@ package main
 import (
 	"context"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,60 +95,58 @@ func TestListenForStateChanges(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Receives state changes", func(t *testing.T) {
-		logger := newLogger()
-		machine, err := newStateMachine(logger, StatusOnline)
-		require.NoError(t, err)
+		synctest.Test(t, func(t *testing.T) {
+			logger := newLogger()
+			machine, err := newStateMachine(logger, StatusOnline)
+			require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
 
-		done := listenForStateChanges(ctx, logger, machine)
+			done := listenForStateChanges(ctx, logger, machine)
 
-		// Wait a moment for the goroutine to start
-		time.Sleep(50 * time.Millisecond)
+			// Transition to a new state
+			err = machine.Transition(StatusOffline)
+			require.NoError(t, err)
 
-		// Transition to a new state
-		err = machine.Transition(StatusOffline)
-		require.NoError(t, err)
+			// Cancel context to trigger exit of the listener goroutine
+			cancel()
 
-		// Cancel context to trigger exit of the listener goroutine
-		cancel()
+			// Wait for goroutine to complete
+			synctest.Wait()
 
-		// Wait for the done signal from the goroutine
-		require.Eventually(t, func() bool {
 			select {
 			case <-done:
-				return true
+				// Success
 			default:
-				return false
+				t.Fatal("Expected done signal")
 			}
-		}, time.Second, 10*time.Millisecond, "Timed out waiting for done signal")
+		})
 	})
 
 	t.Run("Handles context cancellation", func(t *testing.T) {
-		logger := newLogger()
-		machine, err := newStateMachine(logger, StatusOnline)
-		require.NoError(t, err)
+		synctest.Test(t, func(t *testing.T) {
+			logger := newLogger()
+			machine, err := newStateMachine(logger, StatusOnline)
+			require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(t.Context())
+			ctx, cancel := context.WithCancel(t.Context())
 
-		done := listenForStateChanges(ctx, logger, machine)
+			done := listenForStateChanges(ctx, logger, machine)
 
-		// Wait a moment for the goroutine to start
-		time.Sleep(50 * time.Millisecond)
+			// Cancel the context
+			cancel()
 
-		// Cancel the context
-		cancel()
+			// Wait for goroutine to complete
+			synctest.Wait()
 
-		// Wait for the done signal from the goroutine
-		require.Eventually(t, func() bool {
 			select {
 			case <-done:
-				return true
+				// Success
 			default:
-				return false
+				t.Fatal("Expected done signal after context cancellation")
 			}
-		}, time.Second, 10*time.Millisecond, "Timed out waiting for done signal after context cancellation")
+		})
 	})
 }
 
@@ -156,69 +154,69 @@ func TestWaitForOfflineState(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Cancels context when state changes to offline", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			logger := newLogger()
+			machine, err := newStateMachine(logger, StatusOnline)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+
+			// Set up the wait for offline state
+			waitForOfflineState(ctx, cancel, logger, machine)
+
+			// Transition to offline state
+			err = machine.Transition(StatusOffline)
+			require.NoError(t, err)
+
+			// Wait for goroutine to process the state change
+			synctest.Wait()
+
+			// The context should be canceled
+			select {
+			case <-ctx.Done():
+				// Success
+			default:
+				t.Fatal("Expected context to be cancelled")
+			}
+		})
+	})
+}
+
+func TestIntegration(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// This test mimics the flow in main() but in a testable way
 		logger := newLogger()
+
+		// Create a new FSM
 		machine, err := newStateMachine(logger, StatusOnline)
 		require.NoError(t, err)
 
+		// Check initial state
+		assert.Equal(t, StatusOnline, machine.GetState())
+
 		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
 
-		// Set up the wait for offline state
+		// Set up both listeners
+		done := listenForStateChanges(ctx, logger, machine)
 		waitForOfflineState(ctx, cancel, logger, machine)
-
-		// Wait a moment for the goroutine to start
-		time.Sleep(50 * time.Millisecond)
 
 		// Transition to offline state
 		err = machine.Transition(StatusOffline)
 		require.NoError(t, err)
 
-		// The context should be canceled shortly
-		require.Eventually(t, func() bool {
-			select {
-			case <-ctx.Done():
-				return true
-			default:
-				return false
-			}
-		}, time.Second, 10*time.Millisecond, "Timed out waiting for context to be cancelled")
-	})
-}
+		// Wait for goroutines to complete
+		synctest.Wait()
 
-func TestIntegration(t *testing.T) {
-	// This test mimics the flow in main() but in a testable way
-	logger := newLogger()
-
-	// Create a new FSM
-	machine, err := newStateMachine(logger, StatusOnline)
-	require.NoError(t, err)
-
-	// Check initial state
-	assert.Equal(t, StatusOnline, machine.GetState())
-
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	// Set up both listeners
-	done := listenForStateChanges(ctx, logger, machine)
-	waitForOfflineState(ctx, cancel, logger, machine)
-
-	// Wait a moment for the goroutines to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Transition to offline state
-	err = machine.Transition(StatusOffline)
-	require.NoError(t, err)
-
-	// Wait for the done signal
-	require.Eventually(t, func() bool {
+		// Check for done signal
 		select {
 		case <-done:
-			return true
+			// Success
 		default:
-			return false
+			t.Fatal("Expected done signal")
 		}
-	}, time.Second, 10*time.Millisecond, "Timed out waiting for done signal")
 
-	// Verify final state
-	assert.Equal(t, StatusOffline, machine.GetState())
+		// Verify final state
+		assert.Equal(t, StatusOffline, machine.GetState())
+	})
 }
