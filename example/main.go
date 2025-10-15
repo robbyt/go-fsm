@@ -57,15 +57,16 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 	broadcastManager := broadcast.NewManager(logger)
 
 	// Register broadcast hook to enable state change notifications
-	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-		broadcastManager.Broadcast(to)
-	})
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 	if err != nil {
 		return nil, fmt.Errorf("failed to register broadcast hook: %w", err)
 	}
 
 	// Start goroutine to print state changes
-	stateChan := broadcastManager.GetStateChan(parentCtx)
+	stateChan, err := broadcastManager.GetStateChan(parentCtx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get state channel: %w", err)
+	}
 
 	// Send initial state to subscribers
 	broadcastManager.Broadcast(machine.GetState())

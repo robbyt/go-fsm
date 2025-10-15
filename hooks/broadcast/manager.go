@@ -18,6 +18,7 @@ package broadcast
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -40,24 +41,21 @@ func NewManager(logger *slog.Logger) *Manager {
 	}
 }
 
-// GetStateChan returns a channel that will receive state change notifications.
-func (m *Manager) GetStateChan(ctx context.Context) <-chan string {
-	return m.GetStateChanBuffer(ctx, 1)
-}
+// GetStateChan returns a channel that receives state change notifications.
+// The channel is automatically closed when ctx is cancelled.
+// Use functional options to customize buffer size, timeout behavior, or provide a custom channel.
+// Returns an error if ctx is nil.
+func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan string, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("context cannot be nil")
+	}
 
-// GetStateChanWithOptions returns a channel configured with functional options.
-func (m *Manager) GetStateChanWithOptions(ctx context.Context, opts ...Option) <-chan string {
 	config := &Config{
 		syncTimeout: defaultAsyncTimeout,
 	}
 
 	for _, opt := range opts {
 		opt(config)
-	}
-
-	if ctx == nil {
-		m.logger.Error("context is nil; cannot create state channel")
-		return nil
 	}
 
 	var ch chan string
@@ -67,56 +65,26 @@ func (m *Manager) GetStateChanWithOptions(ctx context.Context, opts ...Option) <
 		ch = make(chan string, 1)
 	}
 
-	unsubCallback := m.addSubscriberWithConfig(ch, config)
-
-	go func() {
-		<-ctx.Done()
-		unsubCallback()
-		close(ch)
-	}()
-
-	return ch
-}
-
-// GetStateChanBuffer returns a channel with a configurable buffer size.
-func (m *Manager) GetStateChanBuffer(ctx context.Context, chanBufferSize int) <-chan string {
-	if ctx == nil {
-		m.logger.Error("context is nil; cannot create state channel")
-		return nil
-	}
-
-	ch := make(chan string, chanBufferSize)
-	unsubCallback := m.AddSubscriber(ch)
-
-	go func() {
-		<-ctx.Done()
-		unsubCallback()
-		close(ch)
-	}()
-
-	return ch
-}
-
-// AddSubscriber adds a channel to receive state change broadcasts.
-// Returns a callback function to unsubscribe and remove the channel.
-//
-// Deprecated: Use GetStateChanWithOptions with WithCustomChannel instead.
-func (m *Manager) AddSubscriber(ch chan string) func() {
-	config := &Config{
-		syncTimeout: defaultAsyncTimeout,
-	}
-	return m.addSubscriberWithConfig(ch, config)
-}
-
-// addSubscriberWithConfig adds a subscriber with specific configuration.
-func (m *Manager) addSubscriberWithConfig(ch chan string, config *Config) func() {
+	// Register subscriber
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.subscribers.Store(ch, config)
+	m.mu.Unlock()
 
-	return func() {
+	// Handle cleanup when context is cancelled
+	go func() {
+		<-ctx.Done()
 		m.unsubscribe(ch)
+		close(ch)
+	}()
+
+	return ch, nil
+}
+
+// BroadcastHook returns a function compatible with hooks.ActionFunc signature.
+// This can be passed directly to RegisterPostTransitionHook without manual wrapping.
+func (m *Manager) BroadcastHook() func(ctx context.Context, from, to string) {
+	return func(ctx context.Context, from, to string) {
+		m.Broadcast(to)
 	}
 }
 

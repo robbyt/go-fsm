@@ -33,9 +33,7 @@ func TestReadme_QuickStartExample(t *testing.T) {
 
 	// Manually register broadcast hook
 	if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-			broadcastManager.Broadcast(to)
-		})
+		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 		require.NoError(t, err)
 	}
 
@@ -43,7 +41,8 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	stateChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+	stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
+	require.NoError(t, err)
 
 	// Send initial state
 	broadcastManager.Broadcast(machine.GetState())
@@ -245,9 +244,7 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				broadcastManager.Broadcast(to)
-			})
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 			require.NoError(t, err)
 		}
 
@@ -255,7 +252,8 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
-		stateChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+		stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
+		require.NoError(t, err)
 
 		// Send initial state
 		broadcastManager.Broadcast(machine.GetState())
@@ -304,9 +302,7 @@ func TestReadme_BroadcastModes(t *testing.T) {
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				broadcastManager.Broadcast(to)
-			})
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 			require.NoError(t, err)
 		}
 
@@ -314,7 +310,8 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
-		stateChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+		stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
+		require.NoError(t, err)
 
 		// Send initial state
 		broadcastManager.Broadcast(machine.GetState())
@@ -349,9 +346,7 @@ func TestReadme_BroadcastModes(t *testing.T) {
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				broadcastManager.Broadcast(to)
-			})
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 			require.NoError(t, err)
 		}
 
@@ -359,7 +354,8 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		defer cancel()
 
 		// Use sync broadcast with a 10s timeout (WithSyncBroadcast is a shortcut for settings a 10s timeout)
-		syncChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithSyncBroadcast())
+		syncChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithSyncBroadcast())
+		require.NoError(t, err)
 
 		// Send initial state
 		broadcastManager.Broadcast(machine.GetState())
@@ -395,9 +391,7 @@ func TestReadme_BroadcastModes(t *testing.T) {
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				broadcastManager.Broadcast(to)
-			})
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 			require.NoError(t, err)
 		}
 
@@ -405,7 +399,8 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		defer cancel()
 
 		// Use sync broadcast with 1hr custom timeout
-		timeoutChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithSyncTimeout(1*time.Hour))
+		timeoutChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithSyncTimeout(1*time.Hour))
+		require.NoError(t, err)
 
 		// Send initial state
 		broadcastManager.Broadcast(machine.GetState())
@@ -439,9 +434,7 @@ func TestReadme_BroadcastModes(t *testing.T) {
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				broadcastManager.Broadcast(to)
-			})
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 			require.NoError(t, err)
 		}
 
@@ -449,9 +442,8 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		defer cancel()
 
 		// Use infinite blocking (never times out)
-		infiniteChan := broadcastManager.GetStateChanWithOptions(ctx,
-			broadcast.WithSyncTimeout(-1),
-		)
+		infiniteChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithSyncTimeout(-1))
+		require.NoError(t, err)
 
 		// Send initial state
 		broadcastManager.Broadcast(machine.GetState())

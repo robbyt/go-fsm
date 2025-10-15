@@ -50,7 +50,8 @@ func TestGetStateChan(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	ch := manager.GetStateChan(ctx)
+	ch, err := manager.GetStateChan(ctx)
+	require.NoError(t, err)
 	assert.NotNil(t, ch)
 
 	// Send initial state
@@ -86,49 +87,25 @@ func TestGetStateChan(t *testing.T) {
 	}, 100*time.Millisecond, 10*time.Millisecond)
 }
 
-func TestGetStateChanBuffer(t *testing.T) {
+func TestGetStateChan_WithBufferSize(t *testing.T) {
 	t.Parallel()
 
 	manager := broadcast.NewManager(newTestLogger())
 
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	ch := manager.GetStateChanBuffer(ctx, 10)
-	assert.NotNil(t, ch)
-	assert.Equal(t, 10, cap(ch))
-
-	// Send initial state
-	manager.Broadcast("StateA")
-
-	// Should receive initial state
-	require.Eventually(t, func() bool {
-		select {
-		case state := <-ch:
-			return assert.Equal(t, "StateA", state)
-		default:
-			return false
-		}
-	}, 100*time.Millisecond, 10*time.Millisecond, "Expected initial state")
-}
-
-func TestGetStateChanWithOptions_WithBufferSize(t *testing.T) {
-	t.Parallel()
-
-	manager := broadcast.NewManager(newTestLogger())
-
-	ch := manager.GetStateChanWithOptions(t.Context(), broadcast.WithBufferSize(5))
+	ch, err := manager.GetStateChan(t.Context(), broadcast.WithBufferSize(5))
+	require.NoError(t, err)
 	assert.NotNil(t, ch)
 	assert.Equal(t, 5, cap(ch))
 }
 
-func TestGetStateChanWithOptions_WithCustomChannel(t *testing.T) {
+func TestGetStateChan_WithCustomChannel(t *testing.T) {
 	t.Parallel()
 
 	manager := broadcast.NewManager(newTestLogger())
 
 	customCh := make(chan string, 3)
-	ch := manager.GetStateChanWithOptions(t.Context(), broadcast.WithCustomChannel(customCh))
+	ch, err := manager.GetStateChan(t.Context(), broadcast.WithCustomChannel(customCh))
+	require.NoError(t, err)
 	// Channel is returned as receive-only, so we check capacity instead of equality
 	assert.NotNil(t, ch)
 	assert.Equal(t, 3, cap(ch))
@@ -147,54 +124,6 @@ func TestGetStateChanWithOptions_WithCustomChannel(t *testing.T) {
 	}, 100*time.Millisecond, 10*time.Millisecond, "Expected initial state")
 }
 
-func TestAddSubscriber(t *testing.T) {
-	t.Parallel()
-
-	manager := broadcast.NewManager(newTestLogger())
-
-	ch := make(chan string, 5)
-	unsubscribe := manager.AddSubscriber(ch)
-	assert.NotNil(t, unsubscribe)
-
-	// Send initial state
-	manager.Broadcast("StateA")
-
-	// Should receive initial state
-	require.Eventually(t, func() bool {
-		select {
-		case state := <-ch:
-			return assert.Equal(t, "StateA", state)
-		default:
-			return false
-		}
-	}, 100*time.Millisecond, 10*time.Millisecond, "Expected initial state")
-
-	// Should receive broadcast
-	manager.Broadcast("StateB")
-	require.Eventually(t, func() bool {
-		select {
-		case state := <-ch:
-			return assert.Equal(t, "StateB", state)
-		default:
-			return false
-		}
-	}, 100*time.Millisecond, 10*time.Millisecond, "Expected broadcast state")
-
-	// Unsubscribe
-	unsubscribe()
-
-	// Should not receive future broadcasts
-	manager.Broadcast("StateC")
-	require.Never(t, func() bool {
-		select {
-		case <-ch:
-			return true
-		default:
-			return false
-		}
-	}, 50*time.Millisecond, 10*time.Millisecond, "Should not receive broadcast after unsubscribe")
-}
-
 func TestBroadcast_AsyncMode(t *testing.T) {
 	t.Parallel()
 
@@ -204,7 +133,8 @@ func TestBroadcast_AsyncMode(t *testing.T) {
 	defer cancel()
 
 	// Async mode (default timeout=0)
-	ch := manager.GetStateChan(ctx)
+	ch, err := manager.GetStateChan(ctx)
+	require.NoError(t, err)
 
 	// Send initial state
 	manager.Broadcast("StateA")
@@ -251,10 +181,11 @@ func TestBroadcast_SyncMode(t *testing.T) {
 		manager := broadcast.NewManager(newTestLogger())
 
 		// Sync mode with 500ms timeout
-		ch := manager.GetStateChanWithOptions(t.Context(),
+		ch, err := manager.GetStateChan(t.Context(),
 			broadcast.WithSyncTimeout(500*time.Millisecond),
 			broadcast.WithBufferSize(1),
 		)
+		require.NoError(t, err)
 
 		// Send initial state
 		manager.Broadcast("StateA")
@@ -303,10 +234,11 @@ func TestBroadcast_SyncMode_Timeout(t *testing.T) {
 	manager := broadcast.NewManager(newTestLogger())
 
 	// Sync mode with short timeout
-	ch := manager.GetStateChanWithOptions(t.Context(),
+	ch, err := manager.GetStateChan(t.Context(),
 		broadcast.WithSyncTimeout(50*time.Millisecond),
 		broadcast.WithBufferSize(1),
 	)
+	require.NoError(t, err)
 
 	// Send initial state
 	manager.Broadcast("StateA")
@@ -334,10 +266,11 @@ func TestBroadcast_InfiniteBlockingMode(t *testing.T) {
 		manager := broadcast.NewManager(newTestLogger())
 
 		// Infinite blocking mode (negative timeout)
-		ch := manager.GetStateChanWithOptions(t.Context(),
+		ch, err := manager.GetStateChan(t.Context(),
 			broadcast.WithSyncTimeout(-1),
 			broadcast.WithBufferSize(1),
 		)
+		require.NoError(t, err)
 
 		// Send initial state
 		manager.Broadcast("StateA")
@@ -390,10 +323,14 @@ func TestBroadcast_MultipleSubscribers(t *testing.T) {
 	ctx := t.Context()
 
 	// Create multiple subscribers with different modes
-	ch1 := manager.GetStateChan(ctx)                                           // Async
-	ch2 := manager.GetStateChanWithOptions(ctx, broadcast.WithSyncBroadcast()) // Sync 10s
-	ch3 := manager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))  // Async big buffer
-	ch4 := manager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(5))   // Async medium buffer
+	ch1, err := manager.GetStateChan(ctx) // Async
+	require.NoError(t, err)
+	ch2, err := manager.GetStateChan(ctx, broadcast.WithSyncBroadcast()) // Sync 10s
+	require.NoError(t, err)
+	ch3, err := manager.GetStateChan(ctx, broadcast.WithBufferSize(10)) // Async big buffer
+	require.NoError(t, err)
+	ch4, err := manager.GetStateChan(ctx, broadcast.WithBufferSize(5)) // Async medium buffer
+	require.NoError(t, err)
 
 	// Send initial state
 	manager.Broadcast("StateA")
@@ -434,8 +371,10 @@ func TestBroadcast_ContextCancellation(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(t.Context())
 	defer cancel2()
 
-	ch1 := manager.GetStateChan(ctx1)
-	ch2 := manager.GetStateChan(ctx2)
+	ch1, err := manager.GetStateChan(ctx1)
+	require.NoError(t, err)
+	ch2, err := manager.GetStateChan(ctx2)
+	require.NoError(t, err)
 
 	// Send initial state
 	manager.Broadcast("StateA")

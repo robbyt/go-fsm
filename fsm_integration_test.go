@@ -135,15 +135,14 @@ func TestBroadcastMechanismIntegration(t *testing.T) {
 		broadcastManager := broadcast.NewManager(slog.Default())
 
 		// Manually register broadcast hook
-		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-			broadcastManager.Broadcast(to)
-		})
+		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 		require.NoError(t, err)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
-		stateChan := broadcastManager.GetStateChan(ctx)
+		stateChan, err := broadcastManager.GetStateChan(ctx)
+		require.NoError(t, err)
 
 		// Send initial state
 		broadcastManager.Broadcast(machine.GetState())

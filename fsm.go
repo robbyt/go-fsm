@@ -51,7 +51,6 @@ limitations under the License.
 package fsm
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -59,7 +58,6 @@ import (
 	"sync/atomic"
 
 	"github.com/robbyt/go-fsm/hooks"
-	"github.com/robbyt/go-fsm/hooks/broadcast"
 	"github.com/robbyt/go-fsm/transitions"
 )
 
@@ -80,8 +78,6 @@ type Machine struct {
 	logger *slog.Logger
 	// callbacks holds the callback executor implementation.
 	callbacks CallbackExecutor
-	// Broadcast manages state change notifications to subscribers.
-	broadcast *broadcast.Manager
 }
 
 // persistentState is used for JSON marshaling/unmarshaling.
@@ -142,18 +138,14 @@ func New(
 		return nil, fmt.Errorf("failed to create default callback registry: %w", err)
 	}
 
-	// Create the machine instance.
+	// Create the machine instance
 	m := &Machine{
 		transitions: trans,
 		logHandler:  handler,
 		logger:      slog.New(handler),
 		callbacks:   defaultRegistry,
 	}
-	// Atomically store the initial state.
 	m.state.Store(initialState)
-
-	// Initialize broadcast manager.
-	m.broadcast = broadcast.NewManager(slog.New(handler))
 
 	// Apply user options.
 	for _, opt := range opts {
@@ -237,13 +229,13 @@ func (fsm *Machine) setState(state string) {
 }
 
 // SetState updates the FSM's state to the provided state, bypassing the usual transition rules.
-// It only succeeds if the requested state is defined as a valid *source* state
+// It only succeeds if the requested state is defined as a valid *from* state
 // in the allowedTransitions configuration.
 func (fsm *Machine) SetState(state string) error {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 
-	// Check if the target state is a known source state in our transitions.
+	// Check if the target state is a known **from** state in our transitions.
 	// This ensures the state is valid according to the machine's configuration.
 	if !fsm.transitions.HasState(state) {
 		return fmt.Errorf(
@@ -353,47 +345,4 @@ func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
 	}
 
 	return fsm.transition(toState)
-}
-
-// GetStateChan returns a channel that receives state change notifications.
-// The current state is sent immediately. Delegates to Broadcast.GetStateChan.
-//
-// Deprecated: Direct broadcast methods will be removed in a future version.
-// Instead, create a broadcast.Manager and register it with the hooks registry.
-// See example/main.go for the recommended pattern.
-func (fsm *Machine) GetStateChan(ctx context.Context) <-chan string {
-	return fsm.broadcast.GetStateChan(ctx)
-}
-
-// GetStateChanWithOptions returns a channel configured with functional options.
-// Delegates to Broadcast.GetStateChanWithOptions.
-//
-// Deprecated: Direct broadcast methods will be removed in a future version.
-// Instead, create a broadcast.Manager and register it with the hooks registry.
-// See example/main.go for the recommended pattern.
-func (fsm *Machine) GetStateChanWithOptions(
-	ctx context.Context,
-	opts ...broadcast.Option,
-) <-chan string {
-	return fsm.broadcast.GetStateChanWithOptions(ctx, opts...)
-}
-
-// GetStateChanBuffer returns a channel with a configurable buffer size.
-// Delegates to Broadcast.GetStateChanBuffer.
-//
-// Deprecated: Direct broadcast methods will be removed in a future version.
-// Instead, create a broadcast.Manager and register it with the hooks registry.
-// See example/main.go for the recommended pattern.
-func (fsm *Machine) GetStateChanBuffer(ctx context.Context, chanBufferSize int) <-chan string {
-	return fsm.broadcast.GetStateChanBuffer(ctx, chanBufferSize)
-}
-
-// AddSubscriber adds a channel to receive state change broadcasts.
-// Delegates to Broadcast.AddSubscriber.
-//
-// Deprecated: Direct broadcast methods will be removed in a future version.
-// Instead, create a broadcast.Manager and register it with the hooks registry.
-// See example/main.go for the recommended pattern.
-func (fsm *Machine) AddSubscriber(ch chan string) func() {
-	return fsm.broadcast.AddSubscriber(ch)
 }

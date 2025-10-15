@@ -5,7 +5,7 @@
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=robbyt_go-fsm&metric=coverage)](https://sonarcloud.io/summary/new_code?id=robbyt_go-fsm)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-A thread-safe finite state machine implementation for Go that supports custom states, transitions, and state change notifications.
+A finite state machine for that supports custom states, and pre/post transition hooks.
 
 ## Features
 
