@@ -325,63 +325,6 @@ err := machine.TransitionIfCurrentState(StatusOnline, StatusOffline)
 currentState := machine.GetState()
 ```
 
-### State Change Notifications
-
-#### Broadcast Modes
-
-Subscribers can operate in three different modes based on their timeout setting:
-
-**Async Mode (timeout=0)**: State updates are dropped if the channel is full. Non-blocking transitions. This is the default behavior.
-
-**Sync Mode (positive timeout)**: Blocks state transitions until all sync subscribers read the update or timeout. Never drops state updates unless timeout is reached.
-
-**Infinite Blocking Mode (negative timeout)**: Blocks state transitions indefinitely until all infinite subscribers read the update. Never drops state updates or times out.
-
-To use broadcast options, import the broadcast package:
-
-```go
-import (
-	"github.com/robbyt/go-fsm"
-	"github.com/robbyt/go-fsm/hooks/broadcast"
-)
-```
-
-Example usage:
-
-```go
-// Get notification channel with default async behavior (timeout=0)
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
-
-stateChan := machine.GetStateChan(ctx)
-
-// Process state changes
-go func() {
-	for state := range stateChan {
-		// Handle state change
-		fmt.Println("State changed to:", state)
-	}
-}()
-
-// Use sync broadcast with a 10s timeout (WithSyncBroadcast is a shortcut for settings a 10s timeout)
-syncChan := machine.GetStateChanWithOptions(ctx, broadcast.WithSyncBroadcast())
-
-// Use sync broadcast with 1hr custom timeout
-timeoutChan := machine.GetStateChanWithOptions(ctx, broadcast.WithSyncTimeout(1*time.Hour))
-
-// Use infinite blocking (never times out)
-infiniteChan := machine.GetStateChanWithOptions(ctx,
-	broadcast.WithSyncTimeout(-1),
-)
-
-// Read and print all state changes from the channel
-go func() {
-	for state := range syncChan {
-		fmt.Println("State:", state)
-	}
-}()
-```
-
 ## Complete Example
 
 See [`example/main.go`](example/main.go) for a complete example application.
