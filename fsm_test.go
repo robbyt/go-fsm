@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/robbyt/go-fsm/hooks"
+	"github.com/robbyt/go-fsm/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,33 +18,33 @@ func TestFSM(t *testing.T) {
 	t.Parallel()
 
 	t.Run("NewFSM with invalid initial status", func(t *testing.T) {
-		fsm, err := New(nil, "bla", TypicalTransitions)
+		fsm, err := New(nil, "bla", transitions.TypicalTransitions)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrInvalidState) // More specific check
 	})
 
 	t.Run("NewFSM with nil allowedTransitions", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, nil)
+		fsm, err := New(nil, transitions.StatusNew, nil)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrAvailableStateData) // More specific check
 	})
 
 	t.Run("GetState and SetState", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		fsm, err := New(nil, transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
-		assert.Equal(t, StatusNew, fsm.GetState())
+		assert.Equal(t, transitions.StatusNew, fsm.GetState())
 
-		err = fsm.SetState(StatusRunning)
+		err = fsm.SetState(transitions.StatusRunning)
 		require.NoError(t, err)
-		assert.Equal(t, StatusRunning, fsm.GetState())
+		assert.Equal(t, transitions.StatusRunning, fsm.GetState())
 
 		// Test setting an invalid state (not defined as a source state)
 		err = fsm.SetState("invalid_state")
 		require.ErrorIs(t, err, ErrInvalidState)
-		assert.Equal(t, StatusRunning, fsm.GetState()) // State should not change
+		assert.Equal(t, transitions.StatusRunning, fsm.GetState()) // State should not change
 	})
 
 	t.Run("Transition", func(t *testing.T) {
@@ -55,31 +56,31 @@ func TestFSM(t *testing.T) {
 			expectedState string
 		}{
 			{
-				name:          "Valid transition from StatusNew to StatusBooting",
-				initialState:  StatusNew,
-				toState:       StatusBooting,
+				name:          "Valid transition from transitions.StatusNew to transitions.StatusBooting",
+				initialState:  transitions.StatusNew,
+				toState:       transitions.StatusBooting,
 				expectedErr:   nil,
-				expectedState: StatusBooting,
+				expectedState: transitions.StatusBooting,
 			},
 			{
-				name:          "Invalid transition from StatusNew to StatusRunning",
-				initialState:  StatusNew,
-				toState:       StatusRunning,
+				name:          "Invalid transition from transitions.StatusNew to transitions.StatusRunning",
+				initialState:  transitions.StatusNew,
+				toState:       transitions.StatusRunning,
 				expectedErr:   ErrInvalidStateTransition,
-				expectedState: StatusNew,
+				expectedState: transitions.StatusNew,
 			},
 			{
 				name:          "Invalid target state", // Added case
-				initialState:  StatusNew,
+				initialState:  transitions.StatusNew,
 				toState:       "NonExistentState",
 				expectedErr:   ErrInvalidStateTransition, // Transition is invalid as target doesn't exist in map value
-				expectedState: StatusNew,
+				expectedState: transitions.StatusNew,
 			},
 		}
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				fsm, err := New(nil, tc.initialState, TypicalTransitions)
+				fsm, err := New(nil, tc.initialState, transitions.TypicalTransitions)
 				require.NoError(t, err)
 
 				err = fsm.Transition(tc.toState)
@@ -106,33 +107,33 @@ func TestFSM(t *testing.T) {
 		}{
 			{
 				name:          "Valid transition with matching current state",
-				initialState:  StatusNew,
-				fromState:     StatusNew,
-				toState:       StatusBooting,
+				initialState:  transitions.StatusNew,
+				fromState:     transitions.StatusNew,
+				toState:       transitions.StatusBooting,
 				expectedErr:   nil,
-				expectedState: StatusBooting,
+				expectedState: transitions.StatusBooting,
 			},
 			{
 				name:          "Invalid transition due to mismatched current state",
-				initialState:  StatusBooting,
-				fromState:     StatusNew,
-				toState:       StatusRunning, // This transition would be valid if state matched
+				initialState:  transitions.StatusBooting,
+				fromState:     transitions.StatusNew,
+				toState:       transitions.StatusRunning, // This transition would be valid if state matched
 				expectedErr:   ErrCurrentStateIncorrect,
-				expectedState: StatusBooting,
+				expectedState: transitions.StatusBooting,
 			},
 			{
 				name:          "Invalid transition due to invalid state transition rule",
-				initialState:  StatusNew,
-				fromState:     StatusNew,
-				toState:       StatusRunning, // Invalid transition from New -> Running
+				initialState:  transitions.StatusNew,
+				fromState:     transitions.StatusNew,
+				toState:       transitions.StatusRunning, // Invalid transition from New -> Running
 				expectedErr:   ErrInvalidStateTransition,
-				expectedState: StatusNew,
+				expectedState: transitions.StatusNew,
 			},
 		}
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				fsm, err := New(nil, tc.initialState, TypicalTransitions)
+				fsm, err := New(nil, tc.initialState, transitions.TypicalTransitions)
 				require.NoError(t, err)
 
 				err = fsm.TransitionIfCurrentState(tc.fromState, tc.toState)
@@ -152,53 +153,33 @@ func TestFSM(t *testing.T) {
 func TestFSM_Transition_DisallowedStateChange(t *testing.T) {
 	t.Parallel()
 
-	fsm, err := New(nil, StatusNew, TypicalTransitions)
+	fsm, err := New(nil, transitions.StatusNew, transitions.TypicalTransitions)
 	require.NoError(t, err)
 
-	// Attempt transition to a state not allowed from StatusNew
-	err = fsm.Transition(StatusRunning)
+	// Attempt transition to a state not allowed from transitions.StatusNew
+	err = fsm.Transition(transitions.StatusRunning)
 
 	require.ErrorIs(t, err, ErrInvalidStateTransition)
-	assert.Equal(t, StatusNew, fsm.GetState()) // State remains unchanged
-}
-
-// This test modifies internal state, which is generally discouraged,
-// but kept here as it was in the original file.
-func TestFSM_Transition_ModifiedAllowedTransitions(t *testing.T) {
-	t.Parallel()
-
-	fsm, err := New(nil, StatusNew, TypicalTransitions)
-	require.NoError(t, err)
-
-	// Directly manipulate the internal index (fragile test)
-	fsm.mutex.Lock()
-	delete(fsm.transitionIndex, StatusNew)
-	fsm.mutex.Unlock()
-
-	t.Run("Transition with removed allowedTransitions", func(t *testing.T) {
-		err := fsm.Transition(StatusBooting)
-		// Now that StatusNew is not in the index, the error should be ErrInvalidState
-		require.ErrorIs(t, err, ErrInvalidState)
-		assert.Equal(t, StatusNew, fsm.GetState()) // State remains unchanged
-	})
+	assert.Equal(t, transitions.StatusNew, fsm.GetState()) // State remains unchanged
 }
 
 func TestFSM_NoAllowedTransitions(t *testing.T) {
-	t.Parallel() // Added parallel execution
+	t.Parallel()
 
 	// Create a small transition configuration with limited states
-	smallestTransitions := TransitionsConfig{
-		StatusNew:   {StatusError},
-		StatusError: {}, // StatusError has no outgoing transitions
-	}
-	fsm, err := New(nil, StatusNew, smallestTransitions)
+	smallestTransitions := transitions.MustNew(map[string][]string{
+		transitions.StatusNew:   {transitions.StatusError},
+		transitions.StatusError: {}, // transitions.StatusError has no outgoing transitions
+	})
+	fsm, err := New(nil, transitions.StatusNew, smallestTransitions)
 	require.NoError(t, err)
 
 	// Manually register broadcast hook
 	if reg, ok := fsm.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-		reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 			fsm.Broadcast.Broadcast(to)
 		})
+		require.NoError(t, err)
 	}
 
 	// Create a context with timeout to prevent test from hanging
@@ -212,29 +193,29 @@ func TestFSM_NoAllowedTransitions(t *testing.T) {
 	require.Eventually(t, func() bool {
 		select {
 		case initialState := <-listener:
-			return assert.Equal(t, StatusNew, initialState, "First state should be the initial state")
+			return assert.Equal(t, transitions.StatusNew, initialState, "First state should be the initial state")
 		default:
 			return false
 		}
 	}, 2*time.Second, 10*time.Millisecond, "Timed out waiting for initial state")
 
-	// Transition to StatusError
-	err = fsm.Transition(StatusError)
+	// Transition to transitions.StatusError
+	err = fsm.Transition(transitions.StatusError)
 	require.NoError(t, err)
-	assert.Equal(t, StatusError, fsm.GetState())
+	assert.Equal(t, transitions.StatusError, fsm.GetState())
 
 	// Read the updated state from channel
 	select {
 	case updatedState := <-listener:
-		assert.Equal(t, StatusError, updatedState, "Should receive state transition to StatusError")
+		assert.Equal(t, transitions.StatusError, updatedState, "Should receive state transition to transitions.StatusError")
 	case <-ctx.Done():
-		t.Fatal("Timed out waiting for state update to StatusError")
+		t.Fatal("Timed out waiting for state update to transitions.StatusError")
 	}
 
-	// Attempt invalid transition from StatusError (no transitions defined)
-	err = fsm.Transition(StatusNew)
+	// Attempt invalid transition from transitions.StatusError (no transitions defined)
+	err = fsm.Transition(transitions.StatusNew)
 	require.ErrorIs(t, err, ErrInvalidStateTransition)
-	assert.Equal(t, StatusError, fsm.GetState(), "State should not change after failed transition")
+	assert.Equal(t, transitions.StatusError, fsm.GetState(), "State should not change after failed transition")
 
 	// Verify no state update was sent after the failed transition
 	select {
@@ -246,7 +227,7 @@ func TestFSM_NoAllowedTransitions(t *testing.T) {
 }
 
 func TestFSM_RaceCondition_Broadcast(t *testing.T) {
-	t.Parallel() // Added parallel execution
+	t.Parallel()
 
 	// Define states for testing
 	const (
@@ -260,7 +241,7 @@ func TestFSM_RaceCondition_Broadcast(t *testing.T) {
 	)
 
 	// Define transitions that form a chain
-	transitions := TransitionsConfig{
+	trans := transitions.MustNew(map[string][]string{
 		StateA: {StateB},
 		StateB: {StateC},
 		StateC: {StateD},
@@ -268,17 +249,18 @@ func TestFSM_RaceCondition_Broadcast(t *testing.T) {
 		StateE: {StateF},
 		StateF: {StateG},
 		StateG: {StateA},
-	}
+	})
 
 	// Create the FSM starting at "StateA"
-	fsmMachine, err := New(nil, StateA, transitions)
+	fsmMachine, err := New(nil, StateA, trans)
 	require.NoError(t, err)
 
 	// Manually register broadcast hook
 	if reg, ok := fsmMachine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-		reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 			fsmMachine.Broadcast.Broadcast(to)
 		})
+		require.NoError(t, err)
 	}
 
 	// Create a context with timeout to prevent test from hanging
@@ -345,38 +327,38 @@ func TestFSM_TransitionBool(t *testing.T) {
 		expectedState  string
 	}{
 		{
-			name:           "Valid transition from StatusNew to StatusBooting",
-			initialState:   StatusNew,
-			toState:        StatusBooting,
+			name:           "Valid transition from transitions.StatusNew to transitions.StatusBooting",
+			initialState:   transitions.StatusNew,
+			toState:        transitions.StatusBooting,
 			expectedResult: true,
-			expectedState:  StatusBooting,
+			expectedState:  transitions.StatusBooting,
 		},
 		{
-			name:           "Invalid transition from StatusNew to StatusRunning",
-			initialState:   StatusNew,
-			toState:        StatusRunning,
+			name:           "Invalid transition from transitions.StatusNew to transitions.StatusRunning",
+			initialState:   transitions.StatusNew,
+			toState:        transitions.StatusRunning,
 			expectedResult: false,
-			expectedState:  StatusNew,
+			expectedState:  transitions.StatusNew,
 		},
 		{
-			name:           "Valid transition from StatusRunning to StatusReloading",
-			initialState:   StatusRunning,
-			toState:        StatusReloading,
+			name:           "Valid transition from transitions.StatusRunning to transitions.StatusReloading",
+			initialState:   transitions.StatusRunning,
+			toState:        transitions.StatusReloading,
 			expectedResult: true,
-			expectedState:  StatusReloading,
+			expectedState:  transitions.StatusReloading,
 		},
 		{
-			name:           "Invalid transition from StatusRunning to StatusNew",
-			initialState:   StatusRunning,
-			toState:        StatusNew,
+			name:           "Invalid transition from transitions.StatusRunning to transitions.StatusNew",
+			initialState:   transitions.StatusRunning,
+			toState:        transitions.StatusNew,
 			expectedResult: false,
-			expectedState:  StatusRunning,
+			expectedState:  transitions.StatusRunning,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fsm, err := New(nil, tc.initialState, TypicalTransitions)
+			fsm, err := New(nil, tc.initialState, transitions.TypicalTransitions)
 			require.NoError(t, err)
 
 			result := fsm.TransitionBool(tc.toState)
@@ -396,28 +378,28 @@ func TestFSM_JSONPersistence(t *testing.T) {
 	) // Change to os.Stdout and LevelDebug to see logs
 
 	t.Run("MarshalJSON", func(t *testing.T) {
-		initialState := StatusRunning
-		fsm, err := New(testHandler, initialState, TypicalTransitions)
+		initialState := transitions.StatusRunning
+		fsm, err := New(testHandler, initialState, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
 		// Perform a transition to ensure state changes are captured if needed
-		err = fsm.Transition(StatusReloading)
+		err = fsm.Transition(transitions.StatusReloading)
 		require.NoError(t, err)
-		currentState := StatusReloading // The state we expect to be marshaled
+		currentState := transitions.StatusReloading // The state we expect to be marshaled
 
 		jsonData, err := json.Marshal(fsm)
 		require.NoError(t, err)
 
-		// Expected JSON structure: {"state":"StatusReloading"}
+		// Expected JSON structure: {"state":"transitions.StatusReloading"}
 		expectedJSON := `{"state":"` + currentState + `"}`
 		assert.JSONEq(t, expectedJSON, string(jsonData))
 	})
 
 	t.Run("NewFromJSON - Success", func(t *testing.T) {
-		originalState := StatusRunning
-		fsmOrig, err := New(testHandler, StatusNew, TypicalTransitions)
+		originalState := transitions.StatusRunning
+		fsmOrig, err := New(testHandler, transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
-		err = fsmOrig.Transition(StatusBooting) // Transition a few times
+		err = fsmOrig.Transition(transitions.StatusBooting) // Transition a few times
 		require.NoError(t, err)
 		err = fsmOrig.Transition(originalState)
 		require.NoError(t, err)
@@ -427,7 +409,7 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		require.NoError(t, err)
 
 		// Restore using NewFromJSON
-		fsmRestored, err := NewFromJSON(testHandler, jsonData, TypicalTransitions)
+		fsmRestored, err := NewFromJSON(testHandler, jsonData, transitions.TypicalTransitions)
 		require.NoError(t, err)
 		require.NotNil(t, fsmRestored)
 
@@ -435,15 +417,15 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		assert.Equal(t, originalState, fsmRestored.GetState())
 
 		// Optional: Verify transitions still work on the restored machine
-		err = fsmRestored.Transition(StatusReloading)
+		err = fsmRestored.Transition(transitions.StatusReloading)
 		require.NoError(t, err)
-		assert.Equal(t, StatusReloading, fsmRestored.GetState())
+		assert.Equal(t, transitions.StatusReloading, fsmRestored.GetState())
 	})
 
 	t.Run("NewFromJSON - Invalid JSON Data", func(t *testing.T) {
 		invalidJSON := []byte(`{"state":`) // Malformed JSON
 
-		fsmRestored, err := NewFromJSON(testHandler, invalidJSON, TypicalTransitions)
+		fsmRestored, err := NewFromJSON(testHandler, invalidJSON, transitions.TypicalTransitions)
 		require.Error(t, err)
 		assert.Nil(t, fsmRestored)
 		// Check if the error is related to JSON unmarshaling (it should be)
@@ -452,10 +434,10 @@ func TestFSM_JSONPersistence(t *testing.T) {
 
 	t.Run("NewFromJSON - Unknown State in JSON", func(t *testing.T) {
 		unknownStateJSON := []byte(
-			`{"state":"StatusUnknown"}`,
-		) // Assume StatusUnknown is not in TypicalTransitions
+			`{"state":"transitions.StatusUnknown"}`,
+		) // Assume transitions.StatusUnknown is not in transitions.TypicalTransitions
 
-		fsmRestored, err := NewFromJSON(testHandler, unknownStateJSON, TypicalTransitions)
+		fsmRestored, err := NewFromJSON(testHandler, unknownStateJSON, transitions.TypicalTransitions)
 		require.Error(t, err)
 		assert.Nil(t, fsmRestored)
 		// NewFromJSON calls New, which validates the initial state.
@@ -464,13 +446,13 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		assert.Contains(
 			t,
 			err.Error(),
-			"failed to initialize FSM with restored state 'StatusUnknown'",
+			"failed to initialize FSM with restored state 'transitions.StatusUnknown'",
 		)
 	})
 
 	t.Run("NewFromJSON - Nil Transitions Config", func(t *testing.T) {
 		// Marshal a valid state first
-		fsmOrig, err := New(testHandler, StatusNew, TypicalTransitions)
+		fsmOrig, err := New(testHandler, transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 		jsonData, err := json.Marshal(fsmOrig)
 		require.NoError(t, err)
@@ -491,9 +473,9 @@ func TestFSM_JSONPersistence(t *testing.T) {
 	t.Run("NewFromJSON - Empty JSON Data", func(t *testing.T) {
 		emptyJSON := []byte(`{}`) // Valid JSON, but missing "state" field
 
-		fsmRestored, err := NewFromJSON(testHandler, emptyJSON, TypicalTransitions)
+		fsmRestored, err := NewFromJSON(testHandler, emptyJSON, transitions.TypicalTransitions)
 		// The unmarshal step will succeed, but pState.State will be "" (empty string)
-		// The subsequent call to New("", TypicalTransitions) should fail validation.
+		// The subsequent call to New("", transitions.TypicalTransitions) should fail validation.
 		require.Error(t, err)
 		assert.Nil(t, fsmRestored)
 		require.ErrorIs(t, err, ErrInvalidState) // New should return ErrInvalidState for ""
@@ -504,15 +486,15 @@ func TestFSM_JSONPersistence(t *testing.T) {
 func TestFSM_GetAllStates(t *testing.T) {
 	t.Parallel()
 
-	t.Run("GetAllStates with TypicalTransitions", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, TypicalTransitions)
+	t.Run("GetAllStates with transitions.TypicalTransitions", func(t *testing.T) {
+		fsm, err := New(nil, transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
 		states := fsm.GetAllStates()
 
 		expectedStates := []string{
-			StatusNew, StatusBooting, StatusRunning, StatusReloading,
-			StatusStopping, StatusStopped, StatusError, StatusUnknown,
+			transitions.StatusNew, transitions.StatusBooting, transitions.StatusRunning, transitions.StatusReloading,
+			transitions.StatusStopping, transitions.StatusStopped, transitions.StatusError, transitions.StatusUnknown,
 		}
 
 		assert.ElementsMatch(t, expectedStates, states)
@@ -520,11 +502,11 @@ func TestFSM_GetAllStates(t *testing.T) {
 	})
 
 	t.Run("GetAllStates with custom transitions", func(t *testing.T) {
-		customTransitions := TransitionsConfig{
+		customTransitions := transitions.MustNew(map[string][]string{
 			"StateA": {"StateB", "StateC"},
 			"StateB": {"StateC"},
 			"StateC": {"StateA"},
-		}
+		})
 
 		fsm, err := New(nil, "StateA", customTransitions)
 		require.NoError(t, err)
@@ -537,9 +519,9 @@ func TestFSM_GetAllStates(t *testing.T) {
 	})
 
 	t.Run("GetAllStates with single state", func(t *testing.T) {
-		singleStateTransitions := TransitionsConfig{
+		singleStateTransitions := transitions.MustNew(map[string][]string{
 			"OnlyState": {},
-		}
+		})
 
 		fsm, err := New(nil, "OnlyState", singleStateTransitions)
 		require.NoError(t, err)
@@ -552,7 +534,7 @@ func TestFSM_GetAllStates(t *testing.T) {
 	})
 
 	t.Run("GetAllStates returns copy not reference", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, TypicalTransitions)
+		fsm, err := New(nil, transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
 		states1 := fsm.GetAllStates()

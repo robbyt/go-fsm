@@ -10,6 +10,7 @@ import (
 
 	"github.com/robbyt/go-fsm/hooks"
 	"github.com/robbyt/go-fsm/hooks/broadcast"
+	"github.com/robbyt/go-fsm/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,14 +25,15 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	// Create a new FSM with initial state and predefined transitions
-	machine, err := New(logger.Handler(), StatusNew, TypicalTransitions)
+	machine, err := New(logger.Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 	require.NoError(t, err)
 
 	// Manually register broadcast hook
 	if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-		reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 			machine.Broadcast.Broadcast(to)
 		})
+		require.NoError(t, err)
 	}
 
 	// Subscribe to state changes
@@ -51,16 +53,16 @@ func TestReadme_QuickStartExample(t *testing.T) {
 
 	// Perform state transitions- they must follow allowed transitions
 	// booting -> running -> stopping -> stopped
-	err = machine.Transition(StatusBooting)
+	err = machine.Transition(transitions.StatusBooting)
 	require.NoError(t, err)
 
-	err = machine.Transition(StatusRunning)
+	err = machine.Transition(transitions.StatusRunning)
 	require.NoError(t, err)
 
-	err = machine.Transition(StatusStopping)
+	err = machine.Transition(transitions.StatusStopping)
 	require.NoError(t, err)
 
-	err = machine.Transition(StatusStopped)
+	err = machine.Transition(transitions.StatusStopped)
 	require.NoError(t, err)
 
 	// Cancel context to close channels
@@ -70,7 +72,7 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	wg.Wait()
 
 	// Verify all expected state changes were received
-	expectedStates := []string{StatusNew, StatusBooting, StatusRunning, StatusStopping, StatusStopped}
+	expectedStates := []string{transitions.StatusNew, transitions.StatusBooting, transitions.StatusRunning, transitions.StatusStopping, transitions.StatusStopped}
 	assert.Equal(t, expectedStates, stateChanges)
 }
 
@@ -86,11 +88,11 @@ func TestReadme_CustomStatesAndTransitions(t *testing.T) {
 	)
 
 	// Define allowed transitions (from README example)
-	customTransitions := TransitionsConfig{
-		StatusOnline:  []string{StatusOffline, StatusUnknown},
-		StatusOffline: []string{StatusOnline, StatusUnknown},
-		StatusUnknown: []string{},
-	}
+	customTransitions := transitions.MustNew(map[string][]string{
+		StatusOnline:  {StatusOffline, StatusUnknown},
+		StatusOffline: {StatusOnline, StatusUnknown},
+		StatusUnknown: {},
+	})
 
 	t.Run("Create FSM with custom transitions", func(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
@@ -145,11 +147,11 @@ func TestReadme_FSMCreationExamples(t *testing.T) {
 		StatusUnknown = "StatusUnknown"
 	)
 
-	customTransitions := TransitionsConfig{
-		StatusOnline:  []string{StatusOffline, StatusUnknown},
-		StatusOffline: []string{StatusOnline, StatusUnknown},
-		StatusUnknown: []string{},
-	}
+	customTransitions := transitions.MustNew(map[string][]string{
+		StatusOnline:  {StatusOffline, StatusUnknown},
+		StatusOffline: {StatusOnline, StatusUnknown},
+		StatusUnknown: {},
+	})
 
 	t.Run("Create with default options", func(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
@@ -179,11 +181,11 @@ func TestReadme_StateTransitionOperations(t *testing.T) {
 		StatusUnknown = "StatusUnknown"
 	)
 
-	customTransitions := TransitionsConfig{
-		StatusOnline:  []string{StatusOffline, StatusUnknown},
-		StatusOffline: []string{StatusOnline, StatusUnknown},
-		StatusUnknown: []string{},
-	}
+	customTransitions := transitions.MustNew(map[string][]string{
+		StatusOnline:  {StatusOffline, StatusUnknown},
+		StatusOffline: {StatusOnline, StatusUnknown},
+		StatusUnknown: {},
+	})
 
 	t.Run("Simple transition", func(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
@@ -229,14 +231,15 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Basic state change notifications example", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
+		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 				machine.Broadcast.Broadcast(to)
 			})
+			require.NoError(t, err)
 		}
 
 		// Get notification channel with default async behavior (timeout=0)
@@ -258,10 +261,10 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		})
 
 		// Perform some transitions
-		err = machine.Transition(StatusBooting)
+		err = machine.Transition(transitions.StatusBooting)
 		require.NoError(t, err)
 
-		err = machine.Transition(StatusRunning)
+		err = machine.Transition(transitions.StatusRunning)
 		require.NoError(t, err)
 
 		// Cancel to close channel
@@ -271,7 +274,7 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		wg.Wait()
 
 		// Verify we received all state changes
-		expectedStates := []string{StatusNew, StatusBooting, StatusRunning}
+		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting, transitions.StatusRunning}
 		assert.Equal(t, expectedStates, receivedStates)
 	})
 }
@@ -281,14 +284,15 @@ func TestReadme_BroadcastModes(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Async mode (timeout=0) - default behavior", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
+		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 				machine.Broadcast.Broadcast(to)
 			})
+			require.NoError(t, err)
 		}
 
 		// Get notification channel with default async behavior (timeout=0)
@@ -308,25 +312,26 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		})
 
 		// Perform transition
-		err = machine.Transition(StatusBooting)
+		err = machine.Transition(transitions.StatusBooting)
 		require.NoError(t, err)
 
 		cancel()
 		wg.Wait()
 
-		expectedStates := []string{StatusNew, StatusBooting}
+		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
 		assert.Equal(t, expectedStates, receivedStates)
 	})
 
 	t.Run("Use sync broadcast with 10s timeout (WithSyncBroadcast)", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
+		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 				machine.Broadcast.Broadcast(to)
 			})
+			require.NoError(t, err)
 		}
 
 		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
@@ -347,25 +352,26 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		})
 
 		// Perform transition
-		err = machine.Transition(StatusBooting)
+		err = machine.Transition(transitions.StatusBooting)
 		require.NoError(t, err)
 
 		cancel()
 		wg.Wait()
 
-		expectedStates := []string{StatusNew, StatusBooting}
+		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
 		assert.Equal(t, expectedStates, receivedStates)
 	})
 
 	t.Run("Use sync broadcast with 1hr custom timeout", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
+		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 				machine.Broadcast.Broadcast(to)
 			})
+			require.NoError(t, err)
 		}
 
 		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
@@ -384,25 +390,26 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		})
 
 		// Perform transition
-		err = machine.Transition(StatusBooting)
+		err = machine.Transition(transitions.StatusBooting)
 		require.NoError(t, err)
 
 		cancel()
 		wg.Wait()
 
-		expectedStates := []string{StatusNew, StatusBooting}
+		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
 		assert.Equal(t, expectedStates, receivedStates)
 	})
 
 	t.Run("Use infinite blocking (never times out)", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
+		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 				machine.Broadcast.Broadcast(to)
 			})
+			require.NoError(t, err)
 		}
 
 		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
@@ -423,13 +430,13 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		})
 
 		// Perform transition
-		err = machine.Transition(StatusBooting)
+		err = machine.Transition(transitions.StatusBooting)
 		require.NoError(t, err)
 
 		cancel()
 		wg.Wait()
 
-		expectedStates := []string{StatusNew, StatusBooting}
+		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
 		assert.Equal(t, expectedStates, receivedStates)
 	})
 }

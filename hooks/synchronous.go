@@ -20,9 +20,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strings"
 	"sync"
+
+	"github.com/robbyt/go-fsm/transitions"
 )
 
 // transitionKey uniquely identifies a transition from one state to another.
@@ -34,68 +34,105 @@ type transitionKey struct {
 // SynchronousCallbackRegistry executes callbacks synchronously in FIFO order.
 // It handles panic recovery and error wrapping for all callback executions.
 type SynchronousCallbackRegistry struct {
-	mu                sync.RWMutex
-	logger            *slog.Logger
-	guards            map[transitionKey][]CallbackFunc
-	exitActions       map[string][]CallbackFunc
-	transitionActions map[transitionKey][]CallbackFunc
-	entryActions      map[string][]ActionFunc
-	postTransition    []ActionFunc
+	mu                 sync.RWMutex
+	logger             *slog.Logger
+	transitions        *transitions.Config
+	allStates          map[string]bool
+	preTransitionHooks map[transitionKey][]CallbackFunc
+	postTransition     map[transitionKey][]ActionFunc
 }
 
 // NewSynchronousCallbackRegistry creates a new synchronous callback registry.
-func NewSynchronousCallbackRegistry(logger *slog.Logger) *SynchronousCallbackRegistry {
-	return &SynchronousCallbackRegistry{
-		logger:            logger,
-		guards:            make(map[transitionKey][]CallbackFunc),
-		exitActions:       make(map[string][]CallbackFunc),
-		transitionActions: make(map[transitionKey][]CallbackFunc),
-		entryActions:      make(map[string][]ActionFunc),
-		postTransition:    make([]ActionFunc, 0),
+func NewSynchronousCallbackRegistry(opts ...Option) (*SynchronousCallbackRegistry, error) {
+	r := &SynchronousCallbackRegistry{
+		logger:             slog.Default(),
+		preTransitionHooks: make(map[transitionKey][]CallbackFunc),
+		postTransition:     make(map[transitionKey][]ActionFunc),
+		allStates:          make(map[string]bool),
 	}
-}
 
-// ExecuteGuards runs all registered guards for the transition in FIFO order.
-// Returns an error if any guard rejects the transition.
-func (r *SynchronousCallbackRegistry) ExecuteGuards(from, to string) error {
-	r.mu.RLock()
-	guards := r.guards[transitionKey{from, to}]
-	r.mu.RUnlock()
-
-	for i, guard := range guards {
-		if err := r.safeCallCallback(guard, from, to); err != nil {
-			r.logger.Debug("Guard rejected transition",
-				"from", from, "to", to, "guard_index", i, "error", err)
-			return fmt.Errorf("%w at index %d: %w", ErrGuardRejected, i, err)
+	for _, opt := range opts {
+		if err := opt(r); err != nil {
+			return nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
-	return nil
+
+	return r, nil
 }
 
-// ExecuteExitActions runs all registered exit actions for the source state in FIFO order.
-// Returns an error if any exit action fails.
-func (r *SynchronousCallbackRegistry) ExecuteExitActions(from, to string) error {
-	r.mu.RLock()
-	exitActions := r.exitActions[from]
-	r.mu.RUnlock()
-
-	for i, cb := range exitActions {
-		if err := r.safeCallCallback(cb, from, to); err != nil {
-			return fmt.Errorf("%w during exit from '%s' at index %d: %w",
-				ErrCallbackFailed, from, i, err)
+// getAllStatesFromTransitions extracts all unique states from the transition configuration.
+func (r *SynchronousCallbackRegistry) getAllStatesFromTransitions() map[string]bool {
+	states := make(map[string]bool)
+	if r.transitions != nil {
+		for _, state := range r.transitions.GetAllStates() {
+			states[state] = true
 		}
 	}
-	return nil
+	return states
 }
 
-// ExecuteTransitionActions runs all registered transition actions for the specific transition in FIFO order.
-// Returns an error if any transition action fails.
-func (r *SynchronousCallbackRegistry) ExecuteTransitionActions(from, to string) error {
+// expandStatePattern expands a state pattern (which may contain "*") into concrete states.
+// Returns all states if pattern is "*", otherwise validates and returns the single state.
+func (r *SynchronousCallbackRegistry) expandStatePattern(pattern string) ([]string, error) {
+	if pattern == "*" {
+		// Return all known states
+		if len(r.allStates) == 0 {
+			return nil, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
+		}
+		states := make([]string, 0, len(r.allStates))
+		for state := range r.allStates {
+			states = append(states, state)
+		}
+		return states, nil
+	}
+
+	// Single state - validate it exists if we have a state table
+	if len(r.allStates) > 0 && !r.allStates[pattern] {
+		return nil, fmt.Errorf("unknown state '%s'", pattern)
+	}
+
+	return []string{pattern}, nil
+}
+
+// expandTransitionPatterns expands from/to state patterns into concrete (from, to) pairs.
+func (r *SynchronousCallbackRegistry) expandTransitionPatterns(fromPatterns, toPatterns []string) ([]transitionKey, error) {
+	var fromStates []string
+	for _, pattern := range fromPatterns {
+		expanded, err := r.expandStatePattern(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid 'from' state pattern '%s': %w", pattern, err)
+		}
+		fromStates = append(fromStates, expanded...)
+	}
+
+	var toStates []string
+	for _, pattern := range toPatterns {
+		expanded, err := r.expandStatePattern(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid 'to' state pattern '%s': %w", pattern, err)
+		}
+		toStates = append(toStates, expanded...)
+	}
+
+	// Compute cartesian product
+	keys := make([]transitionKey, 0, len(fromStates)*len(toStates))
+	for _, from := range fromStates {
+		for _, to := range toStates {
+			keys = append(keys, transitionKey{from, to})
+		}
+	}
+
+	return keys, nil
+}
+
+// ExecutePreTransitionHooks runs all registered pre-transition hooks for the specific transition in FIFO order.
+// Returns an error if any pre-transition hook fails.
+func (r *SynchronousCallbackRegistry) ExecutePreTransitionHooks(from, to string) error {
 	r.mu.RLock()
-	transitionActions := r.transitionActions[transitionKey{from, to}]
+	preTransitionHooks := r.preTransitionHooks[transitionKey{from, to}]
 	r.mu.RUnlock()
 
-	for i, cb := range transitionActions {
+	for i, cb := range preTransitionHooks {
 		if err := r.safeCallCallback(cb, from, to); err != nil {
 			return fmt.Errorf("%w during transition at index %d: %w",
 				ErrCallbackFailed, i, err)
@@ -104,23 +141,11 @@ func (r *SynchronousCallbackRegistry) ExecuteTransitionActions(from, to string) 
 	return nil
 }
 
-// ExecuteEntryActions runs all registered entry actions for the target state in FIFO order.
-// Panics are recovered and logged but do not propagate.
-func (r *SynchronousCallbackRegistry) ExecuteEntryActions(from, to string) {
-	r.mu.RLock()
-	entryActions := r.entryActions[to]
-	r.mu.RUnlock()
-
-	for _, action := range entryActions {
-		r.safeCallAction(action, from, to)
-	}
-}
-
 // ExecutePostTransitionHooks runs all registered post-transition hooks in FIFO order.
 // Panics are recovered and logged but do not propagate.
 func (r *SynchronousCallbackRegistry) ExecutePostTransitionHooks(from, to string) {
 	r.mu.RLock()
-	postHooks := r.postTransition
+	postHooks := r.postTransition[transitionKey{from, to}]
 	r.mu.RUnlock()
 
 	for _, hook := range postHooks {
@@ -128,46 +153,50 @@ func (r *SynchronousCallbackRegistry) ExecutePostTransitionHooks(from, to string
 	}
 }
 
-// RegisterGuard registers a guard function for a specific transition.
-func (r *SynchronousCallbackRegistry) RegisterGuard(from, to string, guard CallbackFunc) {
+// RegisterPreTransitionHook registers a pre-transition hook for transitions matching the patterns.
+// Accepts slices of from and to state patterns (use "*" for any state).
+// Expands patterns and registers the callback for each concrete (from, to) transition.
+func (r *SynchronousCallbackRegistry) RegisterPreTransitionHook(from []string, to []string, callback CallbackFunc) error {
+	if len(from) == 0 || len(to) == 0 {
+		return fmt.Errorf("from and to state lists cannot be empty")
+	}
+
+	keys, err := r.expandTransitionPatterns(from, to)
+	if err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	key := transitionKey{from, to}
-	r.guards[key] = append(r.guards[key], guard)
+	for _, key := range keys {
+		r.preTransitionHooks[key] = append(r.preTransitionHooks[key], callback)
+	}
+
+	return nil
 }
 
-// RegisterExitAction registers an exit action for a specific state.
-func (r *SynchronousCallbackRegistry) RegisterExitAction(state string, callback CallbackFunc) {
+// RegisterPostTransitionHook registers a post-transition hook for transitions matching the patterns.
+// Accepts slices of from and to state patterns (use "*" for any state).
+// Expands patterns and registers the action for each concrete (from, to) transition.
+func (r *SynchronousCallbackRegistry) RegisterPostTransitionHook(from []string, to []string, action ActionFunc) error {
+	if len(from) == 0 || len(to) == 0 {
+		return fmt.Errorf("from and to state lists cannot be empty")
+	}
+
+	keys, err := r.expandTransitionPatterns(from, to)
+	if err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.exitActions[state] = append(r.exitActions[state], callback)
-}
+	for _, key := range keys {
+		r.postTransition[key] = append(r.postTransition[key], action)
+	}
 
-// RegisterTransitionAction registers a transition action for a specific transition.
-func (r *SynchronousCallbackRegistry) RegisterTransitionAction(from, to string, callback CallbackFunc) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	key := transitionKey{from, to}
-	r.transitionActions[key] = append(r.transitionActions[key], callback)
-}
-
-// RegisterEntryAction registers an entry action for a specific state.
-func (r *SynchronousCallbackRegistry) RegisterEntryAction(state string, action ActionFunc) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.entryActions[state] = append(r.entryActions[state], action)
-}
-
-// RegisterPostTransitionHook registers a post-transition hook that runs after every transition.
-func (r *SynchronousCallbackRegistry) RegisterPostTransitionHook(action ActionFunc) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.postTransition = append(r.postTransition, action)
+	return nil
 }
 
 // Clear removes all registered callbacks.
@@ -175,19 +204,13 @@ func (r *SynchronousCallbackRegistry) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.guards = make(map[transitionKey][]CallbackFunc)
-	r.exitActions = make(map[string][]CallbackFunc)
-	r.transitionActions = make(map[transitionKey][]CallbackFunc)
-	r.entryActions = make(map[string][]ActionFunc)
-	r.postTransition = make([]ActionFunc, 0)
+	r.preTransitionHooks = make(map[transitionKey][]CallbackFunc)
+	r.postTransition = make(map[transitionKey][]ActionFunc)
 }
 
 // safeCallCallback executes a callback with panic recovery.
 // If the callback panics, the panic is recovered and returned as an error.
-func (r *SynchronousCallbackRegistry) safeCallCallback(
-	cb CallbackFunc,
-	from, to string,
-) (err error) {
+func (r *SynchronousCallbackRegistry) safeCallCallback(cb CallbackFunc, from, to string) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.logger.Error("Callback panicked",
@@ -202,10 +225,7 @@ func (r *SynchronousCallbackRegistry) safeCallCallback(
 
 // safeCallAction executes an action with panic recovery.
 // Panics are logged but do not propagate.
-func (r *SynchronousCallbackRegistry) safeCallAction(
-	action ActionFunc,
-	from, to string,
-) {
+func (r *SynchronousCallbackRegistry) safeCallAction(action ActionFunc, from, to string) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.logger.Error("Action panicked",
@@ -215,78 +235,4 @@ func (r *SynchronousCallbackRegistry) safeCallAction(
 
 	ctx := context.Background()
 	action(ctx, from, to)
-}
-
-// RegisterEntryActionPattern registers an entry action for states matching the pattern.
-// The pattern can be an exact state name or a regex pattern (e.g., "Running", ".*ing$").
-// Returns an error if the pattern is invalid or matches no states.
-func (r *SynchronousCallbackRegistry) RegisterEntryActionPattern(
-	pattern string,
-	action ActionFunc,
-	allStates []string,
-) error {
-	matchedStates := ResolveStatePattern(pattern, allStates)
-	if len(matchedStates) == 0 {
-		return fmt.Errorf("entry action pattern '%s' matches no states", pattern)
-	}
-
-	for _, state := range matchedStates {
-		r.RegisterEntryAction(state, action)
-	}
-
-	return nil
-}
-
-// RegisterExitActionPattern registers an exit action for states matching the pattern.
-// The pattern can be an exact state name or a regex pattern (e.g., "Running", ".*ing$").
-// Returns an error if the pattern is invalid or matches no states.
-func (r *SynchronousCallbackRegistry) RegisterExitActionPattern(
-	pattern string,
-	callback CallbackFunc,
-	allStates []string,
-) error {
-	matchedStates := ResolveStatePattern(pattern, allStates)
-	if len(matchedStates) == 0 {
-		return fmt.Errorf("exit action pattern '%s' matches no states", pattern)
-	}
-
-	for _, state := range matchedStates {
-		r.RegisterExitAction(state, callback)
-	}
-
-	return nil
-}
-
-// ResolveStatePattern resolves a state pattern to concrete state names.
-// The pattern can be an exact state name or a regex pattern.
-// Returns nil if the pattern is invalid or matches no states.
-func ResolveStatePattern(pattern string, allStates []string) []string {
-	if isRegexPattern(pattern) {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			return nil
-		}
-
-		var matched []string
-		for _, state := range allStates {
-			if re.MatchString(state) {
-				matched = append(matched, state)
-			}
-		}
-		return matched
-	}
-
-	// Exact match - verify state exists
-	for _, state := range allStates {
-		if state == pattern {
-			return []string{pattern}
-		}
-	}
-
-	return nil
-}
-
-// isRegexPattern returns true if the string contains regex meta-characters.
-func isRegexPattern(s string) bool {
-	return strings.ContainsAny(s, ".*+?[]{}()^$|\\")
 }

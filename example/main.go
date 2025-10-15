@@ -24,6 +24,7 @@ import (
 
 	"github.com/robbyt/go-fsm"
 	"github.com/robbyt/go-fsm/hooks"
+	"github.com/robbyt/go-fsm/transitions"
 )
 
 // Define custom states
@@ -48,34 +49,49 @@ func newLogger() *slog.Logger {
 }
 
 // getTransitionsConfig returns the allowed state transition configuration
-func getTransitionsConfig() fsm.TransitionsConfig {
-	return fsm.TransitionsConfig{
-		StatusOnline:  []string{StatusOffline, StatusUnknown},
-		StatusOffline: []string{StatusOnline, StatusUnknown},
-		StatusUnknown: []string{},
-	}
+func getTransitionsConfig() *transitions.Config {
+	return transitions.MustNew(map[string][]string{
+		StatusOnline:  {StatusOffline, StatusUnknown},
+		StatusOffline: {StatusOnline, StatusUnknown},
+		StatusUnknown: {},
+	})
 }
 
 // newStateMachine creates a new FSM with the given logger and initial state
 func newStateMachine(logger *slog.Logger, initialState string) (*fsm.Machine, error) {
+	transitionsConfig := getTransitionsConfig()
+
 	// Create and configure callback registry
-	registry := hooks.NewSynchronousCallbackRegistry(logger)
+	registry, err := hooks.NewSynchronousCallbackRegistry(
+		hooks.WithLogger(logger),
+		hooks.WithTransitions(transitionsConfig),
+	)
+	if err != nil {
+		return nil, err
+	}
 
-	// Add entry action for online state
-	registry.RegisterEntryAction(StatusOnline, func(ctx context.Context, from, to string) {
-		logger.Info("Services started", "from", from, "to", to)
-	})
-
-	// Add exit action for online state
-	registry.RegisterExitAction(StatusOnline, func(ctx context.Context, from, to string) error {
+	// Add transition action for going offline
+	err = registry.RegisterPreTransitionHook([]string{StatusOnline}, []string{StatusOffline}, func(ctx context.Context, from, to string) error {
 		logger.Info("Shutting down services", "from", from, "to", to)
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Add transition action for going online
+	err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
+		logger.Info("Starting services", "from", from, "to", to)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	machine, err := fsm.New(
 		logger.Handler(),
 		initialState,
-		getTransitionsConfig(),
+		transitionsConfig,
 		fsm.WithCallbackRegistry(registry),
 	)
 	if err != nil {
@@ -83,9 +99,12 @@ func newStateMachine(logger *slog.Logger, initialState string) (*fsm.Machine, er
 	}
 
 	// Register broadcast hook to enable state change notifications
-	registry.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 		machine.Broadcast.Broadcast(to)
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	return machine, nil
 }

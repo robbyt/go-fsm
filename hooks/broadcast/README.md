@@ -30,7 +30,7 @@ func main() {
 	logger := slog.Default()
 
 	// Create FSM
-	machine, err := fsm.New(logger.Handler(), fsm.StatusNew, fsm.TypicalTransitions)
+	machine, err := fsm.New(logger.Handler(), fsm.StatusNew, fsm.transitions.TypicalTransitions)
 	if err != nil {
 		panic(err)
 	}
@@ -53,8 +53,8 @@ func main() {
 	}()
 
 	// Transitions will now broadcast to subscribers
-	machine.Transition(fsm.StatusBooting)
-	machine.Transition(fsm.StatusRunning)
+	machine.Transition(fsm.transitions.StatusBooting)
+	machine.Transition(fsm.transitions.StatusRunning)
 }
 ```
 
@@ -139,7 +139,7 @@ func main() {
 	}))
 
 	// Create FSM
-	machine, err := fsm.New(logger.Handler(), fsm.StatusNew, fsm.TypicalTransitions)
+	machine, err := fsm.New(logger.Handler(), fsm.StatusNew, fsm.transitions.TypicalTransitions)
 	if err != nil {
 		logger.Error("failed to create FSM", "error", err)
 		return
@@ -169,16 +169,16 @@ func main() {
 
 	// Perform transitions
 	time.Sleep(100 * time.Millisecond)
-	machine.Transition(fsm.StatusBooting)
+	machine.Transition(fsm.transitions.StatusBooting)
 
 	time.Sleep(100 * time.Millisecond)
-	machine.Transition(fsm.StatusRunning)
+	machine.Transition(fsm.transitions.StatusRunning)
 
 	time.Sleep(100 * time.Millisecond)
-	machine.Transition(fsm.StatusStopping)
+	machine.Transition(fsm.transitions.StatusStopping)
 
 	time.Sleep(100 * time.Millisecond)
-	machine.Transition(fsm.StatusStopped)
+	machine.Transition(fsm.transitions.StatusStopped)
 
 	// Wait for goroutine to finish
 	time.Sleep(500 * time.Millisecond)
@@ -338,7 +338,7 @@ You can conditionally broadcast based on the transition:
 ```go
 reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
 	// Only broadcast for certain states
-	if to != fsm.StatusError {
+	if to != fsm.transitions.StatusError {
 		machine.Broadcast.Broadcast(to)
 	}
 })

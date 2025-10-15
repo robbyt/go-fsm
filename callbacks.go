@@ -21,21 +21,9 @@ package fsm
 // The interface is defined where it's consumed (fsm package) following Go best practices.
 // Registration of callbacks happens on the concrete implementation before passing to the FSM.
 type CallbackExecutor interface {
-	// ExecuteGuards runs all registered guards for the transition.
-	// Returns an error if any guard rejects the transition.
-	ExecuteGuards(from, to string) error
-
-	// ExecuteExitActions runs all registered exit actions for the source state.
-	// Returns an error if any exit action fails.
-	ExecuteExitActions(from, to string) error
-
-	// ExecuteTransitionActions runs all registered transition actions.
-	// Returns an error if any transition action fails.
-	ExecuteTransitionActions(from, to string) error
-
-	// ExecuteEntryActions runs all registered entry actions for the target state.
-	// Panics are recovered and logged but do not propagate.
-	ExecuteEntryActions(from, to string)
+	// ExecutePreTransitionHooks runs all registered pre-transition hooks.
+	// Returns an error if any hook fails.
+	ExecutePreTransitionHooks(from, to string) error
 
 	// ExecutePostTransitionHooks runs all registered post-transition hooks.
 	// Panics are recovered and logged but do not propagate.

@@ -11,7 +11,7 @@ A thread-safe finite state machine implementation for Go that supports custom st
 
 - Define custom states and allowed transitions
 - Thread-safe state management using atomic operations
-- Functional hook callbacks (pre-transition guards, entry/exit actions)
+- Functional hook callbacks (pre-transition hooks, post-transition hooks)
 - Subscribe to state changes via channels with context support
 - Structured logging with `log/slog`
 
@@ -40,7 +40,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	// Create a new FSM with initial state and predefined transitions
-	machine, err := fsm.New(logger.Handler(), fsm.StatusNew, fsm.TypicalTransitions)
+	machine, err := fsm.New(logger.Handler(), fsm.StatusNew, fsm.transitions.TypicalTransitions)
 	if err != nil {
 		logger.Error("failed to create FSM", "error", err)
 		return
@@ -60,24 +60,24 @@ func main() {
 
 	// Perform state transitions- they must follow allowed transitions
 	// booting -> running -> stopping -> stopped
-	if err := machine.Transition(fsm.StatusBooting); err != nil {
+	if err := machine.Transition(fsm.transitions.StatusBooting); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
 
-	if err := machine.Transition(fsm.StatusRunning); err != nil {
+	if err := machine.Transition(fsm.transitions.StatusRunning); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
 
 	time.Sleep(time.Second)
 	
-	if err := machine.Transition(fsm.StatusStopping); err != nil {
+	if err := machine.Transition(fsm.transitions.StatusStopping); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
 	
-	if err := machine.Transition(fsm.StatusStopped); err != nil {
+	if err := machine.Transition(fsm.transitions.StatusStopped); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
@@ -93,14 +93,14 @@ func main() {
 const (
 	StatusOnline  = "StatusOnline"
 	StatusOffline = "StatusOffline"
-	StatusUnknown = "StatusUnknown"
+	transitions.StatusUnknown = "transitions.StatusUnknown"
 )
 
 // Define allowed transitions
 var customTransitions = fsm.TransitionsConfig{
-	StatusOnline:  []string{StatusOffline, StatusUnknown},
-	StatusOffline: []string{StatusOnline, StatusUnknown},
-	StatusUnknown: []string{},
+	StatusOnline:  []string{StatusOffline, transitions.StatusUnknown},
+	StatusOffline: []string{StatusOnline, transitions.StatusUnknown},
+	transitions.StatusUnknown: []string{},
 }
 ```
 
@@ -137,81 +137,20 @@ import (
 
 Callbacks execute in this order during transitions:
 
-1. **Guards** - Validate whether transition should proceed (can reject)
-2. **Exit Actions** - Cleanup when leaving a state (can reject)
-3. **Transition Actions** - Perform work during transition (can reject)
-4. **Entry Actions** - Initialize when entering a state (cannot reject - executed after state update)
-5. **Post-Transition Hooks** - Global notifications after transition completes (cannot reject)
+1. **Validate transition is allowed** - Check if transition is defined in FSM configuration
+2. **Pre-Transition Hooks** - Perform work and validation during transition (can reject)
+3. **State Update** - Point of no return
+4. **Post-Transition Hooks** - Global notifications after transition completes (cannot reject)
 
-Callbacks that can reject the transition are executed before the state update. Entry actions and post-transition hooks execute after the state is updated and cannot abort the transition.
+Pre-transition hooks can reject the transition by returning an error. Post-transition hooks execute after the state is updated and cannot abort the transition.
 
-#### Guard Conditions
+#### Pre-Transition Hooks
 
-Guards validate whether a transition should proceed. Multiple guards for the same transition execute in registration order (FIFO), and all must pass.
-
-```go
-// Create and configure callback registry
-registry := hooks.NewSynchronousCallbackRegistry(logger)
-registry.RegisterGuard(StatusOffline, StatusOnline, func(ctx context.Context, from, to string) error {
-	if !networkAvailable() {
-		return errors.New("network unavailable")
-	}
-	return nil
-})
-
-// Create FSM with callback registry
-machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
-	fsm.WithCallbackRegistry(registry),
-)
-
-// Transition will fail if guard rejects
-err := machine.Transition(StatusOnline)
-if errors.Is(err, hooks.ErrGuardRejected) {
-	// Handle guard rejection
-}
-```
-
-#### Entry Actions
-
-Entry actions execute when entering a state after the state update. They cannot abort the transition.
+Pre-transition hooks execute for specific state transitions and can prevent the transition if they fail.
 
 ```go
 registry := hooks.NewSynchronousCallbackRegistry(logger)
-registry.RegisterEntryAction(StatusOnline, func(ctx context.Context, from, to string) {
-	log.Printf("Entered online state from %s", from)
-	startServices()
-})
-
-machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
-	fsm.WithCallbackRegistry(registry),
-)
-```
-
-#### Exit Actions
-
-Exit actions execute when leaving a state and can prevent the transition if they fail.
-
-```go
-registry := hooks.NewSynchronousCallbackRegistry(logger)
-registry.RegisterExitAction(StatusOnline, func(ctx context.Context, from, to string) error {
-	if !canShutdownSafely() {
-		return errors.New("cannot exit: active connections")
-	}
-	return stopServices()
-})
-
-machine, err := fsm.New(logger.Handler(), StatusOnline, customTransitions,
-	fsm.WithCallbackRegistry(registry),
-)
-```
-
-#### Transition Actions
-
-Transition actions execute for specific state transitions and can prevent the transition if they fail.
-
-```go
-registry := hooks.NewSynchronousCallbackRegistry(logger)
-registry.RegisterTransitionAction(StatusOffline, StatusOnline, func(ctx context.Context, from, to string) error {
+registry.RegisterPreTransitionHook(StatusOffline, StatusOnline, func(ctx context.Context, from, to string) error {
 	return establishConnection()
 })
 
@@ -235,63 +174,21 @@ machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
 )
 ```
 
-#### Pattern Matching
-
-Entry and exit actions support regex patterns to match multiple states:
-
-```go
-registry := hooks.NewSynchronousCallbackRegistry(logger)
-
-// Match all states ending in "ing"
-err := registry.RegisterEntryActionPattern(".*ing$", func(ctx context.Context, from, to string) {
-	log.Printf("Entered a progressive state: %s", to)
-}, transitions.GetAllStates())
-if err != nil {
-	// Handle pattern matching error
-}
-
-// Match all states with wildcard
-err = registry.RegisterExitActionPattern(".*", func(ctx context.Context, from, to string) error {
-	log.Printf("Exiting state: %s", from)
-	return nil
-}, transitions.GetAllStates())
-if err != nil {
-	// Handle pattern matching error
-}
-
-machine, err := fsm.New(logger.Handler(), initialState, transitions,
-	fsm.WithCallbackRegistry(registry),
-)
-```
-
-Patterns are resolved during registration. If a pattern matches no states, registration fails.
 
 #### Combining Multiple Callbacks
 
 ```go
 registry := hooks.NewSynchronousCallbackRegistry(logger)
 
-// Guard - validate transition
-registry.RegisterGuard(StatusOffline, StatusOnline, func(ctx context.Context, from, to string) error {
+// Pre-transition hook - validate and perform transition work
+registry.RegisterPreTransitionHook(StatusOffline, StatusOnline, func(ctx context.Context, from, to string) error {
 	if !isAuthorized() {
 		return errors.New("not authorized")
 	}
-	return nil
-})
-
-// Exit action - cleanup before leaving
-registry.RegisterExitAction(StatusOffline, func(ctx context.Context, from, to string) error {
-	return cleanup()
-})
-
-// Transition action - perform transition work
-registry.RegisterTransitionAction(StatusOffline, StatusOnline, func(ctx context.Context, from, to string) error {
+	if err := cleanup(); err != nil {
+		return err
+	}
 	return connect()
-})
-
-// Entry action - initialize new state
-registry.RegisterEntryAction(StatusOnline, func(ctx context.Context, from, to string) {
-	startServices()
 })
 
 // Post-transition hook - global notification
@@ -308,9 +205,9 @@ machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
 
 - Callbacks execute synchronously inside the transition lock
 - Keep callbacks fast to avoid blocking other state transitions
-- Guards should be pure functions with no side effects
-- Long-running operations should be moved to entry actions or post-transition hooks
-- Panics are recovered in all callbacks. For guards, exit actions, and transition actions, panics are returned as errors. For entry actions and post-transition hooks, panics are logged and do not propagate
+- For best performance, validation in pre-transition hooks should be lightweight
+- Long-running operations should be moved to post-transition hooks
+- Panics are recovered in all callbacks. For pre-transition hooks, panics are returned as errors. For post-transition hooks, panics are logged and do not propagate
 
 ### State Transitions
 

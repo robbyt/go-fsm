@@ -31,16 +31,24 @@ func TestGetTransitionsConfig(t *testing.T) {
 	config := getTransitionsConfig()
 
 	// Test that the transition config has the expected states
-	assert.Contains(t, config, StatusOnline, "Config should contain StatusOnline")
-	assert.Contains(t, config, StatusOffline, "Config should contain StatusOffline")
-	assert.Contains(t, config, StatusUnknown, "Config should contain StatusUnknown")
+	assert.True(t, config.HasState(StatusOnline), "Config should contain StatusOnline")
+	assert.True(t, config.HasState(StatusOffline), "Config should contain StatusOffline")
+	assert.True(t, config.HasState(StatusUnknown), "Config should contain StatusUnknown")
 
 	// Test that each state has the expected transitions
-	assert.ElementsMatch(t, []string{StatusOffline, StatusUnknown}, config[StatusOnline],
+	onlineTransitions, ok := config.GetAllowedTransitions(StatusOnline)
+	require.True(t, ok)
+	assert.ElementsMatch(t, []string{StatusOffline, StatusUnknown}, onlineTransitions,
 		"StatusOnline should transition to StatusOffline and StatusUnknown")
-	assert.ElementsMatch(t, []string{StatusOnline, StatusUnknown}, config[StatusOffline],
+
+	offlineTransitions, ok := config.GetAllowedTransitions(StatusOffline)
+	require.True(t, ok)
+	assert.ElementsMatch(t, []string{StatusOnline, StatusUnknown}, offlineTransitions,
 		"StatusOffline should transition to StatusOnline and StatusUnknown")
-	assert.Empty(t, config[StatusUnknown],
+
+	unknownTransitions, ok := config.GetAllowedTransitions(StatusUnknown)
+	require.True(t, ok)
+	assert.Empty(t, unknownTransitions,
 		"StatusUnknown should not have any allowed transitions")
 }
 
