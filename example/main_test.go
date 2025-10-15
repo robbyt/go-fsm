@@ -99,7 +99,7 @@ func TestListenForStateChanges(t *testing.T) {
 		machine, err := newStateMachine(logger, StatusOnline)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
 		done := listenForStateChanges(ctx, logger, machine)
@@ -115,12 +115,14 @@ func TestListenForStateChanges(t *testing.T) {
 		cancel()
 
 		// Wait for the done signal from the goroutine
-		select {
-		case <-done:
-			// This is the expected result
-		case <-time.After(time.Second):
-			t.Fatal("Timed out waiting for done signal")
-		}
+		require.Eventually(t, func() bool {
+			select {
+			case <-done:
+				return true
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Timed out waiting for done signal")
 	})
 
 	t.Run("Handles context cancellation", func(t *testing.T) {
@@ -128,7 +130,7 @@ func TestListenForStateChanges(t *testing.T) {
 		machine, err := newStateMachine(logger, StatusOnline)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 
 		done := listenForStateChanges(ctx, logger, machine)
 
@@ -139,12 +141,14 @@ func TestListenForStateChanges(t *testing.T) {
 		cancel()
 
 		// Wait for the done signal from the goroutine
-		select {
-		case <-done:
-			// This is the expected result
-		case <-time.After(time.Second):
-			t.Fatal("Timed out waiting for done signal after context cancellation")
-		}
+		require.Eventually(t, func() bool {
+			select {
+			case <-done:
+				return true
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Timed out waiting for done signal after context cancellation")
 	})
 }
 
@@ -156,7 +160,7 @@ func TestWaitForOfflineState(t *testing.T) {
 		machine, err := newStateMachine(logger, StatusOnline)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 
 		// Set up the wait for offline state
 		waitForOfflineState(ctx, cancel, logger, machine)
@@ -169,12 +173,14 @@ func TestWaitForOfflineState(t *testing.T) {
 		require.NoError(t, err)
 
 		// The context should be canceled shortly
-		select {
-		case <-ctx.Done():
-			// This is the expected result - context was cancelled
-		case <-time.After(time.Second):
-			t.Fatal("Timed out waiting for context to be cancelled")
-		}
+		require.Eventually(t, func() bool {
+			select {
+			case <-ctx.Done():
+				return true
+			default:
+				return false
+			}
+		}, time.Second, 10*time.Millisecond, "Timed out waiting for context to be cancelled")
 	})
 }
 
@@ -189,7 +195,7 @@ func TestIntegration(t *testing.T) {
 	// Check initial state
 	assert.Equal(t, StatusOnline, machine.GetState())
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	// Set up both listeners
@@ -204,12 +210,14 @@ func TestIntegration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for the done signal
-	select {
-	case <-done:
-		// This is expected
-	case <-time.After(time.Second):
-		t.Fatal("Timed out waiting for done signal")
-	}
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond, "Timed out waiting for done signal")
 
 	// Verify final state
 	assert.Equal(t, StatusOffline, machine.GetState())

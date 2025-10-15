@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robbyt/go-fsm/hooks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -193,20 +194,29 @@ func TestFSM_NoAllowedTransitions(t *testing.T) {
 	fsm, err := New(nil, StatusNew, smallestTransitions)
 	require.NoError(t, err)
 
+	// Manually register broadcast hook
+	if reg, ok := fsm.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
+		reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+			fsm.Broadcast.Broadcast(to)
+		})
+	}
+
 	// Create a context with timeout to prevent test from hanging
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	// Get state channel and read initial state
 	listener := fsm.GetStateChan(ctx)
 	require.NotNil(t, listener, "Listener channel should not be nil") // Added nil check
 
-	select {
-	case initialState := <-listener:
-		assert.Equal(t, StatusNew, initialState, "First state should be the initial state")
-	case <-ctx.Done():
-		t.Fatal("Timed out waiting for initial state")
-	}
+	require.Eventually(t, func() bool {
+		select {
+		case initialState := <-listener:
+			return assert.Equal(t, StatusNew, initialState, "First state should be the initial state")
+		default:
+			return false
+		}
+	}, 2*time.Second, 10*time.Millisecond, "Timed out waiting for initial state")
 
 	// Transition to StatusError
 	err = fsm.Transition(StatusError)
@@ -264,8 +274,15 @@ func TestFSM_RaceCondition_Broadcast(t *testing.T) {
 	fsmMachine, err := New(nil, StateA, transitions)
 	require.NoError(t, err)
 
+	// Manually register broadcast hook
+	if reg, ok := fsmMachine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
+		reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+			fsmMachine.Broadcast.Broadcast(to)
+		})
+	}
+
 	// Create a context with timeout to prevent test from hanging
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 
 	// Create a listener for the FSM state changes
@@ -273,12 +290,14 @@ func TestFSM_RaceCondition_Broadcast(t *testing.T) {
 	require.NotNil(t, listener, "Listener channel should not be nil") // Added nil check
 
 	// Read initial state
-	select {
-	case initialState := <-listener:
-		assert.Equal(t, StateA, initialState)
-	case <-ctx.Done():
-		t.Fatal("Timed out waiting for initial state")
-	}
+	require.Eventually(t, func() bool {
+		select {
+		case initialState := <-listener:
+			return assert.Equal(t, StateA, initialState)
+		default:
+			return false
+		}
+	}, 3*time.Second, 10*time.Millisecond, "Timed out waiting for initial state")
 
 	// Perform a series of transitions
 	stateSequence := []string{StateB, StateC, StateD, StateE, StateF, StateG}

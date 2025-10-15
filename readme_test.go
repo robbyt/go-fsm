@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robbyt/go-fsm/hooks"
+	"github.com/robbyt/go-fsm/hooks/broadcast"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,15 +25,20 @@ func TestReadme_QuickStartExample(t *testing.T) {
 
 	// Create a new FSM with initial state and predefined transitions
 	machine, err := New(logger.Handler(), StatusNew, TypicalTransitions)
-	if err != nil {
-		t.Fatalf("failed to create FSM: %v", err)
+	require.NoError(t, err)
+
+	// Manually register broadcast hook
+	if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
+		reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+			machine.Broadcast.Broadcast(to)
+		})
 	}
 
 	// Subscribe to state changes
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	stateChan := machine.GetStateChanWithOptions(ctx, WithBufferSize(10))
+	stateChan := machine.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
 
 	var stateChanges []string
 	var wg sync.WaitGroup
@@ -44,21 +51,17 @@ func TestReadme_QuickStartExample(t *testing.T) {
 
 	// Perform state transitions- they must follow allowed transitions
 	// booting -> running -> stopping -> stopped
-	if err := machine.Transition(StatusBooting); err != nil {
-		t.Fatalf("transition failed: %v", err)
-	}
+	err = machine.Transition(StatusBooting)
+	require.NoError(t, err)
 
-	if err := machine.Transition(StatusRunning); err != nil {
-		t.Fatalf("transition failed: %v", err)
-	}
+	err = machine.Transition(StatusRunning)
+	require.NoError(t, err)
 
-	if err := machine.Transition(StatusStopping); err != nil {
-		t.Fatalf("transition failed: %v", err)
-	}
+	err = machine.Transition(StatusStopping)
+	require.NoError(t, err)
 
-	if err := machine.Transition(StatusStopped); err != nil {
-		t.Fatalf("transition failed: %v", err)
-	}
+	err = machine.Transition(StatusStopped)
+	require.NoError(t, err)
 
 	// Cancel context to close channels
 	cancel()
@@ -229,11 +232,18 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
 		require.NoError(t, err)
 
+		// Manually register broadcast hook
+		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
+			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+				machine.Broadcast.Broadcast(to)
+			})
+		}
+
 		// Get notification channel with default async behavior (timeout=0)
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
-		stateChan := machine.GetStateChanWithOptions(ctx, WithBufferSize(10))
+		stateChan := machine.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
 
 		// Track received states
 		var receivedStates []string
@@ -274,11 +284,18 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
 		require.NoError(t, err)
 
+		// Manually register broadcast hook
+		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
+			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+				machine.Broadcast.Broadcast(to)
+			})
+		}
+
 		// Get notification channel with default async behavior (timeout=0)
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
-		stateChan := machine.GetStateChanWithOptions(ctx, WithBufferSize(10))
+		stateChan := machine.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
 
 		var receivedStates []string
 		var wg sync.WaitGroup
@@ -305,11 +322,18 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		// Manually register broadcast hook
+		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
+			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+				machine.Broadcast.Broadcast(to)
+			})
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 		defer cancel()
 
 		// Use sync broadcast with a 10s timeout (WithSyncBroadcast is a shortcut for settings a 10s timeout)
-		syncChan := machine.GetStateChanWithOptions(ctx, WithSyncBroadcast())
+		syncChan := machine.GetStateChanWithOptions(ctx, broadcast.WithSyncBroadcast())
 
 		var receivedStates []string
 		var wg sync.WaitGroup
@@ -337,11 +361,18 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		// Manually register broadcast hook
+		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
+			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+				machine.Broadcast.Broadcast(to)
+			})
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 		defer cancel()
 
 		// Use sync broadcast with 1hr custom timeout
-		timeoutChan := machine.GetStateChanWithOptions(ctx, WithSyncTimeout(1*time.Hour))
+		timeoutChan := machine.GetStateChanWithOptions(ctx, broadcast.WithSyncTimeout(1*time.Hour))
 
 		var receivedStates []string
 		var wg sync.WaitGroup
@@ -367,12 +398,19 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), StatusNew, TypicalTransitions)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		// Manually register broadcast hook
+		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
+			reg.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+				machine.Broadcast.Broadcast(to)
+			})
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 		defer cancel()
 
 		// Use infinite blocking (never times out)
 		infiniteChan := machine.GetStateChanWithOptions(ctx,
-			WithSyncTimeout(-1),
+			broadcast.WithSyncTimeout(-1),
 		)
 
 		var receivedStates []string

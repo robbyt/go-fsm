@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/robbyt/go-fsm"
+	"github.com/robbyt/go-fsm/hooks"
 )
 
 // Define custom states
@@ -57,7 +58,36 @@ func getTransitionsConfig() fsm.TransitionsConfig {
 
 // newStateMachine creates a new FSM with the given logger and initial state
 func newStateMachine(logger *slog.Logger, initialState string) (*fsm.Machine, error) {
-	return fsm.New(logger.Handler(), initialState, getTransitionsConfig())
+	// Create and configure callback registry
+	registry := hooks.NewSynchronousCallbackRegistry(logger)
+
+	// Add entry action for online state
+	registry.RegisterEntryAction(StatusOnline, func(ctx context.Context, from, to string) {
+		logger.Info("Services started", "from", from, "to", to)
+	})
+
+	// Add exit action for online state
+	registry.RegisterExitAction(StatusOnline, func(ctx context.Context, from, to string) error {
+		logger.Info("Shutting down services", "from", from, "to", to)
+		return nil
+	})
+
+	machine, err := fsm.New(
+		logger.Handler(),
+		initialState,
+		getTransitionsConfig(),
+		fsm.WithCallbackRegistry(registry),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Register broadcast hook to enable state change notifications
+	registry.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+		machine.Broadcast.Broadcast(to)
+	})
+
+	return machine, nil
 }
 
 // listenForStateChanges starts a goroutine that listens for state changes
