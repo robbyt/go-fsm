@@ -22,7 +22,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/robbyt/go-fsm/transitions"
+	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
 // transitionKey uniquely identifies a transition from one state to another.

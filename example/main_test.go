@@ -24,7 +24,7 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/robbyt/go-fsm/transitions"
+	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

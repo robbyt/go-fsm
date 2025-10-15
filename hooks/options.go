@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/robbyt/go-fsm/transitions"
+	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
 // Option is a functional option for configuring SynchronousCallbackRegistry.

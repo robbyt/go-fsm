@@ -1,4 +1,4 @@
-module github.com/robbyt/go-fsm
+module github.com/robbyt/go-fsm/v2
 
 go 1.25.2
 

@@ -57,8 +57,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/robbyt/go-fsm/hooks"
-	"github.com/robbyt/go-fsm/transitions"
+	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
 // Machine represents a finite state machine that tracks its current state

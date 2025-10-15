@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/robbyt/go-fsm"
-	"github.com/robbyt/go-fsm/hooks"
-	"github.com/robbyt/go-fsm/hooks/broadcast"
-	"github.com/robbyt/go-fsm/transitions"
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
+	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

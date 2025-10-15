@@ -26,10 +26,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/robbyt/go-fsm"
-	"github.com/robbyt/go-fsm/hooks"
-	"github.com/robbyt/go-fsm/hooks/broadcast"
-	"github.com/robbyt/go-fsm/transitions"
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
+	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
 func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machine, error) {

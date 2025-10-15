@@ -22,8 +22,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/robbyt/go-fsm"
-	"github.com/robbyt/go-fsm/hooks"
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/hooks"
 )
 
 func main() {
@@ -128,9 +128,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/robbyt/go-fsm"
-	"github.com/robbyt/go-fsm/hooks"
-	"github.com/robbyt/go-fsm/hooks/broadcast"
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 )
 
 func main() {

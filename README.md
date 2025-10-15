@@ -18,7 +18,7 @@ A finite state machine for that supports custom states, and pre/post transition 
 ## Installation
 
 ```bash
-go get github.com/robbyt/go-fsm
+go get github.com/robbyt/go-fsm/v2
 ```
 
 ## Quick Start
@@ -32,7 +32,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/robbyt/go-fsm"
+	"github.com/robbyt/go-fsm/v2"
 )
 
 func main() {
@@ -128,8 +128,8 @@ To use callbacks, import the hooks package:
 
 ```go
 import (
-	"github.com/robbyt/go-fsm"
-	"github.com/robbyt/go-fsm/hooks"
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/hooks"
 )
 ```
 

@@ -24,7 +24,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/robbyt/go-fsm/hooks/broadcast"
+	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
