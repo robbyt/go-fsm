@@ -18,6 +18,14 @@ help: Makefile
 test:
 	go test -race -cover $(PACKAGES)
 
+## coverage: Generate and display coverage report
+.PHONY: coverage
+coverage:
+	go test -coverprofile=coverage.out $(PACKAGES)
+	go tool cover -func=coverage.out
+	@echo
+	@echo "To view HTML coverage report, run: go tool cover -html=coverage.out"
+
 ## bench: Run performance benchmarks
 .PHONY: bench
 bench:

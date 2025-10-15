@@ -28,7 +28,6 @@ type Option func(*Config)
 
 // Config holds configuration for subscriber channels.
 type Config struct {
-	sendInitial   bool
 	customChannel chan string
 	syncTimeout   time.Duration
 }
@@ -37,13 +36,6 @@ type Config struct {
 func WithBufferSize(size int) Option {
 	return func(config *Config) {
 		config.customChannel = make(chan string, size)
-	}
-}
-
-// WithoutInitialState prevents sending the current state immediately after subscription.
-func WithoutInitialState() Option {
-	return func(config *Config) {
-		config.sendInitial = false
 	}
 }
 

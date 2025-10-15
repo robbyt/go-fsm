@@ -28,33 +28,26 @@ type Manager struct {
 	mu          sync.Mutex
 	subscribers sync.Map
 	logger      *slog.Logger
-	getState    func() string
 }
 
 // NewManager creates a new broadcast manager.
-// The getState callback is used to retrieve the current state for initial broadcasts.
-func NewManager(logger *slog.Logger, getState func() string) *Manager {
+func NewManager(logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Manager{
-		logger:   logger,
-		getState: getState,
+		logger: logger,
 	}
 }
 
-// GetStateChan returns a channel that will receive the current state immediately.
+// GetStateChan returns a channel that will receive state change notifications.
 func (m *Manager) GetStateChan(ctx context.Context) <-chan string {
 	return m.GetStateChanBuffer(ctx, 1)
 }
 
 // GetStateChanWithOptions returns a channel configured with functional options.
-func (m *Manager) GetStateChanWithOptions(
-	ctx context.Context,
-	opts ...Option,
-) <-chan string {
+func (m *Manager) GetStateChanWithOptions(ctx context.Context, opts ...Option) <-chan string {
 	config := &Config{
-		sendInitial: true,
 		syncTimeout: defaultAsyncTimeout,
 	}
 
@@ -86,7 +79,6 @@ func (m *Manager) GetStateChanWithOptions(
 }
 
 // GetStateChanBuffer returns a channel with a configurable buffer size.
-// The current state will be sent immediately.
 func (m *Manager) GetStateChanBuffer(ctx context.Context, chanBufferSize int) <-chan string {
 	if ctx == nil {
 		m.logger.Error("context is nil; cannot create state channel")
@@ -111,7 +103,6 @@ func (m *Manager) GetStateChanBuffer(ctx context.Context, chanBufferSize int) <-
 // Deprecated: Use GetStateChanWithOptions with WithCustomChannel instead.
 func (m *Manager) AddSubscriber(ch chan string) func() {
 	config := &Config{
-		sendInitial: true,
 		syncTimeout: defaultAsyncTimeout,
 	}
 	return m.addSubscriberWithConfig(ch, config)
@@ -123,17 +114,6 @@ func (m *Manager) addSubscriberWithConfig(ch chan string, config *Config) func()
 	defer m.mu.Unlock()
 
 	m.subscribers.Store(ch, config)
-
-	if config.sendInitial {
-		select {
-		case ch <- m.getState():
-			m.logger.Debug("Sent initial state to channel")
-		default:
-			m.logger.Warn(
-				"Unable to write initial state to channel; next state change will be sent instead",
-			)
-		}
-	}
 
 	return func() {
 		m.unsubscribe(ch)

@@ -38,25 +38,23 @@ func newTestLogger() *slog.Logger {
 func TestNewManager(t *testing.T) {
 	t.Parallel()
 
-	currentState := "initial"
-	getState := func() string { return currentState }
-
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 	assert.NotNil(t, manager)
 }
 
 func TestGetStateChan(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	ch := manager.GetStateChan(ctx)
 	assert.NotNil(t, ch)
+
+	// Send initial state
+	manager.Broadcast("StateA")
 
 	// Should receive initial state immediately
 	require.Eventually(t, func() bool {
@@ -69,7 +67,6 @@ func TestGetStateChan(t *testing.T) {
 	}, 100*time.Millisecond, 10*time.Millisecond, "Expected to receive initial state")
 
 	// Broadcast new state
-	currentState = "StateB"
 	manager.Broadcast("StateB")
 
 	require.Eventually(t, func() bool {
@@ -92,9 +89,7 @@ func TestGetStateChan(t *testing.T) {
 func TestGetStateChanBuffer(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -102,6 +97,9 @@ func TestGetStateChanBuffer(t *testing.T) {
 	ch := manager.GetStateChanBuffer(ctx, 10)
 	assert.NotNil(t, ch)
 	assert.Equal(t, 10, cap(ch))
+
+	// Send initial state
+	manager.Broadcast("StateA")
 
 	// Should receive initial state
 	require.Eventually(t, func() bool {
@@ -114,44 +112,10 @@ func TestGetStateChanBuffer(t *testing.T) {
 	}, 100*time.Millisecond, 10*time.Millisecond, "Expected initial state")
 }
 
-func TestGetStateChanWithOptions_WithoutInitialState(t *testing.T) {
-	t.Parallel()
-
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
-
-	ch := manager.GetStateChanWithOptions(t.Context(), broadcast.WithoutInitialState())
-	assert.NotNil(t, ch)
-
-	// Should NOT receive initial state
-	require.Never(t, func() bool {
-		select {
-		case <-ch:
-			return true
-		default:
-			return false
-		}
-	}, 50*time.Millisecond, 10*time.Millisecond, "Should not receive initial state")
-
-	// But should receive broadcasts
-	manager.Broadcast("StateB")
-	require.Eventually(t, func() bool {
-		select {
-		case state := <-ch:
-			return assert.Equal(t, "StateB", state)
-		default:
-			return false
-		}
-	}, 100*time.Millisecond, 10*time.Millisecond, "Expected broadcast state")
-}
-
 func TestGetStateChanWithOptions_WithBufferSize(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	ch := manager.GetStateChanWithOptions(t.Context(), broadcast.WithBufferSize(5))
 	assert.NotNil(t, ch)
@@ -161,15 +125,16 @@ func TestGetStateChanWithOptions_WithBufferSize(t *testing.T) {
 func TestGetStateChanWithOptions_WithCustomChannel(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	customCh := make(chan string, 3)
 	ch := manager.GetStateChanWithOptions(t.Context(), broadcast.WithCustomChannel(customCh))
 	// Channel is returned as receive-only, so we check capacity instead of equality
 	assert.NotNil(t, ch)
 	assert.Equal(t, 3, cap(ch))
+
+	// Send initial state
+	manager.Broadcast("StateA")
 
 	// Should receive initial state
 	require.Eventually(t, func() bool {
@@ -185,13 +150,14 @@ func TestGetStateChanWithOptions_WithCustomChannel(t *testing.T) {
 func TestAddSubscriber(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	ch := make(chan string, 5)
 	unsubscribe := manager.AddSubscriber(ch)
 	assert.NotNil(t, unsubscribe)
+
+	// Send initial state
+	manager.Broadcast("StateA")
 
 	// Should receive initial state
 	require.Eventually(t, func() bool {
@@ -232,15 +198,16 @@ func TestAddSubscriber(t *testing.T) {
 func TestBroadcast_AsyncMode(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	// Async mode (default timeout=0)
 	ch := manager.GetStateChan(ctx)
+
+	// Send initial state
+	manager.Broadcast("StateA")
 
 	// Drain initial state
 	<-ch
@@ -281,15 +248,16 @@ func TestBroadcast_SyncMode(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
-		currentState := "StateA"
-		getState := func() string { return currentState }
-		manager := broadcast.NewManager(newTestLogger(), getState)
+		manager := broadcast.NewManager(newTestLogger())
 
 		// Sync mode with 500ms timeout
 		ch := manager.GetStateChanWithOptions(t.Context(),
 			broadcast.WithSyncTimeout(500*time.Millisecond),
 			broadcast.WithBufferSize(1),
 		)
+
+		// Send initial state
+		manager.Broadcast("StateA")
 
 		// Drain initial state
 		<-ch
@@ -332,15 +300,16 @@ func TestBroadcast_SyncMode(t *testing.T) {
 func TestBroadcast_SyncMode_Timeout(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	// Sync mode with short timeout
 	ch := manager.GetStateChanWithOptions(t.Context(),
 		broadcast.WithSyncTimeout(50*time.Millisecond),
 		broadcast.WithBufferSize(1),
 	)
+
+	// Send initial state
+	manager.Broadcast("StateA")
 
 	// Drain initial state
 	<-ch
@@ -362,15 +331,16 @@ func TestBroadcast_InfiniteBlockingMode(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
-		currentState := "StateA"
-		getState := func() string { return currentState }
-		manager := broadcast.NewManager(newTestLogger(), getState)
+		manager := broadcast.NewManager(newTestLogger())
 
 		// Infinite blocking mode (negative timeout)
 		ch := manager.GetStateChanWithOptions(t.Context(),
 			broadcast.WithSyncTimeout(-1),
 			broadcast.WithBufferSize(1),
 		)
+
+		// Send initial state
+		manager.Broadcast("StateA")
 
 		// Drain initial state
 		<-ch
@@ -415,23 +385,24 @@ func TestBroadcast_InfiniteBlockingMode(t *testing.T) {
 func TestBroadcast_MultipleSubscribers(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	ctx := t.Context()
 
 	// Create multiple subscribers with different modes
-	ch1 := manager.GetStateChan(ctx)                                             // Async
-	ch2 := manager.GetStateChanWithOptions(ctx, broadcast.WithSyncBroadcast())   // Sync 10s
-	ch3 := manager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))    // Async big buffer
-	ch4 := manager.GetStateChanWithOptions(ctx, broadcast.WithoutInitialState()) // Async no initial
+	ch1 := manager.GetStateChan(ctx)                                           // Async
+	ch2 := manager.GetStateChanWithOptions(ctx, broadcast.WithSyncBroadcast()) // Sync 10s
+	ch3 := manager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))  // Async big buffer
+	ch4 := manager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(5))   // Async medium buffer
+
+	// Send initial state
+	manager.Broadcast("StateA")
 
 	// Drain initial states
 	<-ch1
 	<-ch2
 	<-ch3
-	// ch4 has no initial state
+	<-ch4
 
 	// Broadcast to all
 	manager.Broadcast("StateB")
@@ -457,9 +428,7 @@ func TestBroadcast_MultipleSubscribers(t *testing.T) {
 func TestBroadcast_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	currentState := "StateA"
-	getState := func() string { return currentState }
-	manager := broadcast.NewManager(newTestLogger(), getState)
+	manager := broadcast.NewManager(newTestLogger())
 
 	ctx1, cancel1 := context.WithCancel(t.Context())
 	ctx2, cancel2 := context.WithCancel(t.Context())
@@ -467,6 +436,9 @@ func TestBroadcast_ContextCancellation(t *testing.T) {
 
 	ch1 := manager.GetStateChan(ctx1)
 	ch2 := manager.GetStateChan(ctx2)
+
+	// Send initial state
+	manager.Broadcast("StateA")
 
 	// Drain initial states
 	<-ch1

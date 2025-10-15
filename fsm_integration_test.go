@@ -8,6 +8,7 @@ import (
 
 	"github.com/robbyt/go-fsm"
 	"github.com/robbyt/go-fsm/hooks"
+	"github.com/robbyt/go-fsm/hooks/broadcast"
 	"github.com/robbyt/go-fsm/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -130,16 +131,22 @@ func TestBroadcastMechanismIntegration(t *testing.T) {
 		)
 		require.NoError(t, err)
 
+		// Create standalone broadcast manager
+		broadcastManager := broadcast.NewManager(slog.Default())
+
 		// Manually register broadcast hook
 		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-			machine.Broadcast.Broadcast(to)
+			broadcastManager.Broadcast(to)
 		})
 		require.NoError(t, err)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
-		stateChan := machine.GetStateChan(ctx)
+		stateChan := broadcastManager.GetStateChan(ctx)
+
+		// Send initial state
+		broadcastManager.Broadcast(machine.GetState())
 
 		// Read initial state
 		initialState := <-stateChan

@@ -28,10 +28,13 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	machine, err := New(logger.Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 	require.NoError(t, err)
 
+	// Create standalone broadcast manager
+	broadcastManager := broadcast.NewManager(logger)
+
 	// Manually register broadcast hook
 	if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
 		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-			machine.Broadcast.Broadcast(to)
+			broadcastManager.Broadcast(to)
 		})
 		require.NoError(t, err)
 	}
@@ -40,7 +43,10 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	stateChan := machine.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+	stateChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+
+	// Send initial state
+	broadcastManager.Broadcast(machine.GetState())
 
 	var stateChanges []string
 	var wg sync.WaitGroup
@@ -234,10 +240,13 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
+		// Create standalone broadcast manager
+		broadcastManager := broadcast.NewManager(slog.Default())
+
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
 			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				machine.Broadcast.Broadcast(to)
+				broadcastManager.Broadcast(to)
 			})
 			require.NoError(t, err)
 		}
@@ -246,7 +255,10 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
-		stateChan := machine.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+		stateChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+
+		// Send initial state
+		broadcastManager.Broadcast(machine.GetState())
 
 		// Track received states
 		var receivedStates []string
@@ -287,10 +299,13 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
+		// Create standalone broadcast manager
+		broadcastManager := broadcast.NewManager(slog.Default())
+
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
 			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				machine.Broadcast.Broadcast(to)
+				broadcastManager.Broadcast(to)
 			})
 			require.NoError(t, err)
 		}
@@ -299,7 +314,10 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
-		stateChan := machine.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+		stateChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithBufferSize(10))
+
+		// Send initial state
+		broadcastManager.Broadcast(machine.GetState())
 
 		var receivedStates []string
 		var wg sync.WaitGroup
@@ -326,10 +344,13 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
+		// Create standalone broadcast manager
+		broadcastManager := broadcast.NewManager(slog.Default())
+
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
 			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				machine.Broadcast.Broadcast(to)
+				broadcastManager.Broadcast(to)
 			})
 			require.NoError(t, err)
 		}
@@ -338,7 +359,10 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		defer cancel()
 
 		// Use sync broadcast with a 10s timeout (WithSyncBroadcast is a shortcut for settings a 10s timeout)
-		syncChan := machine.GetStateChanWithOptions(ctx, broadcast.WithSyncBroadcast())
+		syncChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithSyncBroadcast())
+
+		// Send initial state
+		broadcastManager.Broadcast(machine.GetState())
 
 		var receivedStates []string
 		var wg sync.WaitGroup
@@ -366,10 +390,13 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
+		// Create standalone broadcast manager
+		broadcastManager := broadcast.NewManager(slog.Default())
+
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
 			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				machine.Broadcast.Broadcast(to)
+				broadcastManager.Broadcast(to)
 			})
 			require.NoError(t, err)
 		}
@@ -378,7 +405,10 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		defer cancel()
 
 		// Use sync broadcast with 1hr custom timeout
-		timeoutChan := machine.GetStateChanWithOptions(ctx, broadcast.WithSyncTimeout(1*time.Hour))
+		timeoutChan := broadcastManager.GetStateChanWithOptions(ctx, broadcast.WithSyncTimeout(1*time.Hour))
+
+		// Send initial state
+		broadcastManager.Broadcast(machine.GetState())
 
 		var receivedStates []string
 		var wg sync.WaitGroup
@@ -404,10 +434,13 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
 		require.NoError(t, err)
 
+		// Create standalone broadcast manager
+		broadcastManager := broadcast.NewManager(slog.Default())
+
 		// Manually register broadcast hook
 		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
 			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-				machine.Broadcast.Broadcast(to)
+				broadcastManager.Broadcast(to)
 			})
 			require.NoError(t, err)
 		}
@@ -416,9 +449,12 @@ func TestReadme_BroadcastModes(t *testing.T) {
 		defer cancel()
 
 		// Use infinite blocking (never times out)
-		infiniteChan := machine.GetStateChanWithOptions(ctx,
+		infiniteChan := broadcastManager.GetStateChanWithOptions(ctx,
 			broadcast.WithSyncTimeout(-1),
 		)
+
+		// Send initial state
+		broadcastManager.Broadcast(machine.GetState())
 
 		var receivedStates []string
 		var wg sync.WaitGroup

@@ -81,7 +81,7 @@ type Machine struct {
 	// callbacks holds the callback executor implementation.
 	callbacks CallbackExecutor
 	// Broadcast manages state change notifications to subscribers.
-	Broadcast *broadcast.Manager
+	broadcast *broadcast.Manager
 }
 
 // persistentState is used for JSON marshaling/unmarshaling.
@@ -153,7 +153,7 @@ func New(
 	m.state.Store(initialState)
 
 	// Initialize broadcast manager.
-	m.Broadcast = broadcast.NewManager(slog.New(handler), m.GetState)
+	m.broadcast = broadcast.NewManager(slog.New(handler))
 
 	// Apply user options.
 	for _, opt := range opts {
@@ -357,29 +357,43 @@ func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
 
 // GetStateChan returns a channel that receives state change notifications.
 // The current state is sent immediately. Delegates to Broadcast.GetStateChan.
+//
+// Deprecated: Direct broadcast methods will be removed in a future version.
+// Instead, create a broadcast.Manager and register it with the hooks registry.
+// See example/main.go for the recommended pattern.
 func (fsm *Machine) GetStateChan(ctx context.Context) <-chan string {
-	return fsm.Broadcast.GetStateChan(ctx)
+	return fsm.broadcast.GetStateChan(ctx)
 }
 
 // GetStateChanWithOptions returns a channel configured with functional options.
 // Delegates to Broadcast.GetStateChanWithOptions.
+//
+// Deprecated: Direct broadcast methods will be removed in a future version.
+// Instead, create a broadcast.Manager and register it with the hooks registry.
+// See example/main.go for the recommended pattern.
 func (fsm *Machine) GetStateChanWithOptions(
 	ctx context.Context,
 	opts ...broadcast.Option,
 ) <-chan string {
-	return fsm.Broadcast.GetStateChanWithOptions(ctx, opts...)
+	return fsm.broadcast.GetStateChanWithOptions(ctx, opts...)
 }
 
 // GetStateChanBuffer returns a channel with a configurable buffer size.
 // Delegates to Broadcast.GetStateChanBuffer.
+//
+// Deprecated: Direct broadcast methods will be removed in a future version.
+// Instead, create a broadcast.Manager and register it with the hooks registry.
+// See example/main.go for the recommended pattern.
 func (fsm *Machine) GetStateChanBuffer(ctx context.Context, chanBufferSize int) <-chan string {
-	return fsm.Broadcast.GetStateChanBuffer(ctx, chanBufferSize)
+	return fsm.broadcast.GetStateChanBuffer(ctx, chanBufferSize)
 }
 
 // AddSubscriber adds a channel to receive state change broadcasts.
 // Delegates to Broadcast.AddSubscriber.
 //
-// Deprecated: Use GetStateChanWithOptions with broadcast.WithCustomChannel instead.
+// Deprecated: Direct broadcast methods will be removed in a future version.
+// Instead, create a broadcast.Manager and register it with the hooks registry.
+// See example/main.go for the recommended pattern.
 func (fsm *Machine) AddSubscriber(ch chan string) func() {
-	return fsm.Broadcast.AddSubscriber(ch)
+	return fsm.broadcast.AddSubscriber(ch)
 }
