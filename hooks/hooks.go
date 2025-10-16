@@ -22,9 +22,14 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-
-	"github.com/robbyt/go-fsm/v2/transitions"
 )
+
+// stateRegistry provides state lookup and enumeration.
+// This interface is satisfied by transitions.Config.
+type stateRegistry interface {
+	HasState(state string) bool
+	GetAllStates() []string
+}
 
 // CallbackFunc is the signature for callbacks that can abort transitions.
 // Returns an error to reject the transition.
@@ -56,8 +61,7 @@ type transitionKey struct {
 type Registry struct {
 	mu                 sync.RWMutex
 	logger             *slog.Logger
-	transitions        *transitions.Config
-	allStates          map[string]bool
+	transitions        stateRegistry
 	preTransitionHooks map[transitionKey][]CallbackFunc
 	postTransition     map[transitionKey][]ActionFunc
 }
@@ -68,7 +72,6 @@ func NewRegistry(opts ...Option) (*Registry, error) {
 		logger:             slog.Default(),
 		preTransitionHooks: make(map[transitionKey][]CallbackFunc),
 		postTransition:     make(map[transitionKey][]ActionFunc),
-		allStates:          make(map[string]bool),
 	}
 
 	for _, opt := range opts {
@@ -80,58 +83,36 @@ func NewRegistry(opts ...Option) (*Registry, error) {
 	return r, nil
 }
 
-// getAllStatesFromTransitions extracts all unique states from the transition configuration.
-func (r *Registry) getAllStatesFromTransitions() map[string]bool {
-	states := make(map[string]bool)
-	if r.transitions != nil {
-		for _, state := range r.transitions.GetAllStates() {
-			states[state] = true
-		}
-	}
-	return states
-}
-
-// expandStatePattern expands a state pattern (which may contain "*") into concrete states.
-// Returns all states if pattern is "*", otherwise validates and returns the single state.
-func (r *Registry) expandStatePattern(pattern string) ([]string, error) {
-	if pattern == "*" {
-		// Return all known states
-		if len(r.allStates) == 0 {
-			return nil, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
-		}
-		states := make([]string, 0, len(r.allStates))
-		for state := range r.allStates {
-			states = append(states, state)
-		}
-		return states, nil
-	}
-
-	// Single state - validate it exists if we have a state table
-	if len(r.allStates) > 0 && !r.allStates[pattern] {
-		return nil, fmt.Errorf("unknown state '%s'", pattern)
-	}
-
-	return []string{pattern}, nil
-}
-
-// expandTransitionPatterns expands from/to state patterns into concrete (from, to) pairs.
-func (r *Registry) expandTransitionPatterns(fromPatterns, toPatterns []string) ([]transitionKey, error) {
+// resolveTransitionPatterns resolves from/to state patterns into concrete (from, to) pairs.
+func (r *Registry) resolveTransitionPatterns(fromPatterns, toPatterns []string) ([]transitionKey, error) {
 	var fromStates []string
 	for _, pattern := range fromPatterns {
-		expanded, err := r.expandStatePattern(pattern)
-		if err != nil {
-			return nil, fmt.Errorf("invalid 'from' state pattern '%s': %w", pattern, err)
+		if pattern == "*" {
+			if r.transitions == nil {
+				return nil, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
+			}
+			fromStates = append(fromStates, r.transitions.GetAllStates()...)
+		} else {
+			if r.transitions != nil && !r.transitions.HasState(pattern) {
+				return nil, fmt.Errorf("unknown state '%s'", pattern)
+			}
+			fromStates = append(fromStates, pattern)
 		}
-		fromStates = append(fromStates, expanded...)
 	}
 
 	var toStates []string
 	for _, pattern := range toPatterns {
-		expanded, err := r.expandStatePattern(pattern)
-		if err != nil {
-			return nil, fmt.Errorf("invalid 'to' state pattern '%s': %w", pattern, err)
+		if pattern == "*" {
+			if r.transitions == nil {
+				return nil, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
+			}
+			toStates = append(toStates, r.transitions.GetAllStates()...)
+		} else {
+			if r.transitions != nil && !r.transitions.HasState(pattern) {
+				return nil, fmt.Errorf("unknown state '%s'", pattern)
+			}
+			toStates = append(toStates, pattern)
 		}
-		toStates = append(toStates, expanded...)
 	}
 
 	// Compute cartesian product
@@ -175,13 +156,13 @@ func (r *Registry) ExecutePostTransitionHooks(from, to string) {
 
 // RegisterPreTransitionHook registers a pre-transition hook for transitions matching the patterns.
 // Accepts slices of from and to state patterns (use "*" for any state).
-// Expands patterns and registers the callback for each concrete (from, to) transition.
+// Resolves patterns and registers the callback for each concrete (from, to) transition.
 func (r *Registry) RegisterPreTransitionHook(from []string, to []string, callback CallbackFunc) error {
 	if len(from) == 0 || len(to) == 0 {
 		return fmt.Errorf("from and to state lists cannot be empty")
 	}
 
-	keys, err := r.expandTransitionPatterns(from, to)
+	keys, err := r.resolveTransitionPatterns(from, to)
 	if err != nil {
 		return err
 	}
@@ -198,13 +179,13 @@ func (r *Registry) RegisterPreTransitionHook(from []string, to []string, callbac
 
 // RegisterPostTransitionHook registers a post-transition hook for transitions matching the patterns.
 // Accepts slices of from and to state patterns (use "*" for any state).
-// Expands patterns and registers the action for each concrete (from, to) transition.
+// Resolves patterns and registers the action for each concrete (from, to) transition.
 func (r *Registry) RegisterPostTransitionHook(from []string, to []string, action ActionFunc) error {
 	if len(from) == 0 || len(to) == 0 {
 		return fmt.Errorf("from and to state lists cannot be empty")
 	}
 
-	keys, err := r.expandTransitionPatterns(from, to)
+	keys, err := r.resolveTransitionPatterns(from, to)
 	if err != nil {
 		return err
 	}

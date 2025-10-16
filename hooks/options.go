@@ -3,8 +3,6 @@ package hooks
 import (
 	"fmt"
 	"log/slog"
-
-	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
 // Option is a functional option for configuring SynchronousCallbackRegistry.
@@ -33,13 +31,12 @@ func WithLogHandler(handler slog.Handler) Option {
 }
 
 // WithTransitions sets the state transition table for pattern validation and expansion.
-func WithTransitions(trans *transitions.Config) Option {
+func WithTransitions(trans stateRegistry) Option {
 	return func(r *Registry) error {
 		if trans == nil {
 			return fmt.Errorf("transitions cannot be nil")
 		}
 		r.transitions = trans
-		r.allStates = r.getAllStatesFromTransitions()
 		return nil
 	}
 }
