@@ -32,72 +32,6 @@ type Config struct {
 	index  map[string]map[string]struct{}
 }
 
-// buildIndex creates the internal lookup index from the configuration map.
-// It validates that all destination states are explicitly defined as source states in the config.
-// Returns all validation errors joined together.
-func buildIndex(config map[string][]string) (map[string]map[string]struct{}, error) {
-	index := make(map[string]map[string]struct{})
-	undefinedStates := make(map[string]struct{})
-	var errs []error
-
-	// Build the index and validate state names
-	for from, tos := range config {
-		// Validate source state name
-		if err := validateStateName(from); err != nil {
-			errs = append(errs, fmt.Errorf("invalid source state: %w", err))
-			// Skip this source state but continue validating others
-			continue
-		}
-
-		index[from] = make(map[string]struct{})
-
-		for _, to := range tos {
-			// Validate destination state name
-			if err := validateStateName(to); err != nil {
-				errs = append(errs, fmt.Errorf("invalid destination state: %w", err))
-				// Skip this destination but continue validating others
-				continue
-			}
-
-			index[from][to] = struct{}{}
-
-			// Check if destination state is defined as a source state
-			if _, isDefined := config[to]; !isDefined {
-				undefinedStates[to] = struct{}{}
-			}
-		}
-	}
-
-	// Add error for undefined destination states
-	if len(undefinedStates) > 0 {
-		errs = append(errs, fmt.Errorf(
-			"%w: %v (hint: define them as source states with empty transitions for terminal states)",
-			ErrUndefinedDestinations,
-			slices.Sorted(maps.Keys(undefinedStates)),
-		))
-	}
-
-	return index, errors.Join(errs...)
-}
-
-// validateStateName checks if a state name is valid.
-// Returns an error if the state name is empty, contains only whitespace, or uses reserved keywords.
-func validateStateName(state string) error {
-	if state == "" {
-		return fmt.Errorf("%w: cannot be empty", ErrInvalidStateName)
-	}
-	if strings.TrimSpace(state) == "" {
-		return fmt.Errorf("%w: cannot be whitespace-only: %q", ErrInvalidStateName, state)
-	}
-	if strings.TrimSpace(state) != state {
-		return fmt.Errorf("%w: cannot have leading or trailing whitespace: %q", ErrInvalidStateName, state)
-	}
-	if state == "*" {
-		return fmt.Errorf("%w: '*' is reserved for wildcard pattern matching", ErrInvalidStateName)
-	}
-	return nil
-}
-
 // New creates a new Transitions instance from a configuration map.
 // The configuration maps source states to their allowed target states.
 // Returns an error if the configuration is empty or contains undefined destination states.
@@ -214,5 +148,71 @@ func (t *Config) UnmarshalJSON(data []byte) error {
 
 	t.config = config
 	t.index = index
+	return nil
+}
+
+// buildIndex creates the internal lookup index from the configuration map.
+// It validates that all destination states are explicitly defined as source states in the config.
+// Returns all validation errors joined together.
+func buildIndex(config map[string][]string) (map[string]map[string]struct{}, error) {
+	index := make(map[string]map[string]struct{})
+	undefinedStates := make(map[string]struct{})
+	var errs []error
+
+	// Build the index and validate state names
+	for from, tos := range config {
+		// Validate source state name
+		if err := validateStateName(from); err != nil {
+			errs = append(errs, fmt.Errorf("invalid source state: %w", err))
+			// Skip this source state but continue validating others
+			continue
+		}
+
+		index[from] = make(map[string]struct{})
+
+		for _, to := range tos {
+			// Validate destination state name
+			if err := validateStateName(to); err != nil {
+				errs = append(errs, fmt.Errorf("invalid destination state: %w", err))
+				// Skip this destination but continue validating others
+				continue
+			}
+
+			index[from][to] = struct{}{}
+
+			// Check if destination state is defined as a source state
+			if _, isDefined := config[to]; !isDefined {
+				undefinedStates[to] = struct{}{}
+			}
+		}
+	}
+
+	// Add error for undefined destination states
+	if len(undefinedStates) > 0 {
+		errs = append(errs, fmt.Errorf(
+			"%w: %v (hint: define them as source states with empty transitions for terminal states)",
+			ErrUndefinedDestinations,
+			slices.Sorted(maps.Keys(undefinedStates)),
+		))
+	}
+
+	return index, errors.Join(errs...)
+}
+
+// validateStateName checks if a state name is valid.
+// Returns an error if the state name is empty, contains only whitespace, or uses reserved keywords.
+func validateStateName(state string) error {
+	if state == "" {
+		return fmt.Errorf("%w: cannot be empty", ErrInvalidStateName)
+	}
+	if strings.TrimSpace(state) == "" {
+		return fmt.Errorf("%w: cannot be whitespace-only: %q", ErrInvalidStateName, state)
+	}
+	if strings.TrimSpace(state) != state {
+		return fmt.Errorf("%w: cannot have leading or trailing whitespace: %q", ErrInvalidStateName, state)
+	}
+	if state == "*" {
+		return fmt.Errorf("%w: '*' is reserved for wildcard pattern matching", ErrInvalidStateName)
+	}
 	return nil
 }
