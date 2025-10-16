@@ -18,7 +18,6 @@ package hooks
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -38,17 +37,6 @@ type CallbackFunc func(ctx context.Context, from, to string) error
 // ActionFunc is the signature for callbacks that cannot abort transitions.
 // These execute after the point of no return and are used for side effects only.
 type ActionFunc func(ctx context.Context, from, to string)
-
-var (
-	// ErrGuardRejected is returned when a guard condition rejects a transition
-	ErrGuardRejected = errors.New("guard rejected transition")
-
-	// ErrCallbackFailed is returned when a callback fails during transition
-	ErrCallbackFailed = errors.New("callback failed")
-
-	// ErrCallbackPanic is returned when a callback panics
-	ErrCallbackPanic = errors.New("callback panicked")
-)
 
 // transitionKey uniquely identifies a transition from one state to another.
 type transitionKey struct {
