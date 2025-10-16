@@ -2,14 +2,12 @@ package fsm
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/robbyt/go-fsm/v2/hooks"
-	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,133 +17,76 @@ import (
 func TestReadme_QuickStartExample(t *testing.T) {
 	t.Parallel()
 
-	// Replicate the exact Quick Start example from README.md
-
 	// Create a logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// Create standalone broadcast manager
-	broadcastManager := broadcast.NewManager(logger.Handler())
-
-	// Create callback registry with broadcast hook
-	registry, err := hooks.NewRegistry(
-		hooks.WithLogger(logger),
-		hooks.WithTransitions(transitions.Typical),
-	)
+	// Create a new FSM with initial state and inline transitions
+	machine, err := NewSimple("new", map[string][]string{
+		"new":      {"booting", "error"},
+		"booting":  {"running", "error"},
+		"running":  {"stopping", "error"},
+		"stopping": {"stopped", "error"},
+		"stopped":  {"new", "error"},
+		"error":    {},
+	}, WithLogger(logger))
 	require.NoError(t, err)
 
-	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
+	// Perform state transitions - they must follow allowed transitions
+	// new -> booting -> running -> stopping -> stopped
+	err = machine.Transition("booting")
 	require.NoError(t, err)
+	assert.Equal(t, "booting", machine.GetState())
 
-	// Create a new FSM with initial state and predefined transitions
-	machine, err := New(transitions.StatusNew, transitions.Typical,
-		WithLogger(logger),
-		WithCallbackRegistry(registry),
-	)
+	err = machine.Transition("running")
 	require.NoError(t, err)
+	assert.Equal(t, "running", machine.GetState())
 
-	// Subscribe to state changes
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
+	err = machine.Transition("stopping")
 	require.NoError(t, err)
+	assert.Equal(t, "stopping", machine.GetState())
 
-	// Send initial state
-	broadcastManager.Broadcast(machine.GetState())
-
-	var stateChanges []string
-	var wg sync.WaitGroup
-
-	wg.Go(func() {
-		for state := range stateChan {
-			stateChanges = append(stateChanges, state)
-		}
-	})
-
-	// Perform state transitions- they must follow allowed transitions
-	// booting -> running -> stopping -> stopped
-	err = machine.Transition(transitions.StatusBooting)
+	err = machine.Transition("stopped")
 	require.NoError(t, err)
-
-	err = machine.Transition(transitions.StatusRunning)
-	require.NoError(t, err)
-
-	err = machine.Transition(transitions.StatusStopping)
-	require.NoError(t, err)
-
-	err = machine.Transition(transitions.StatusStopped)
-	require.NoError(t, err)
-
-	// Cancel context to close channels
-	cancel()
-
-	// Wait for goroutine to finish processing all states
-	wg.Wait()
-
-	// Verify all expected state changes were received
-	expectedStates := []string{transitions.StatusNew, transitions.StatusBooting, transitions.StatusRunning, transitions.StatusStopping, transitions.StatusStopped}
-	assert.Equal(t, expectedStates, stateChanges)
+	assert.Equal(t, "stopped", machine.GetState())
 }
 
 // TestReadme_CustomStatesAndTransitions tests the custom states example from README.md
 func TestReadme_CustomStatesAndTransitions(t *testing.T) {
 	t.Parallel()
 
-	// Define custom states (from README example)
-	const (
-		StatusOnline  = "StatusOnline"
-		StatusOffline = "StatusOffline"
-		StatusUnknown = "StatusUnknown"
-	)
-
-	// Define allowed transitions (from README example)
-	customTransitions := transitions.MustNew(map[string][]string{
-		StatusOnline:  {StatusOffline, StatusUnknown},
-		StatusOffline: {StatusOnline, StatusUnknown},
-		StatusUnknown: {},
-	})
-
-	t.Run("Create FSM with custom transitions", func(t *testing.T) {
-		machine, err := New(StatusOnline, customTransitions)
+	t.Run("Simple approach with inline map", func(t *testing.T) {
+		// Simple approach with inline map
+		machine, err := NewSimple("online", map[string][]string{
+			"online":  {"offline", "unknown"},
+			"offline": {"online", "unknown"},
+			"unknown": {},
+		})
 		require.NoError(t, err)
 		require.NotNil(t, machine)
-		assert.Equal(t, StatusOnline, machine.GetState())
+		assert.Equal(t, "online", machine.GetState())
+
+		// Test basic transition
+		err = machine.Transition("offline")
+		require.NoError(t, err)
+		assert.Equal(t, "offline", machine.GetState())
 	})
 
-	t.Run("Test allowed transitions", func(t *testing.T) {
-		machine, err := New(StatusOnline, customTransitions)
+	t.Run("Advanced approach with reusable transition config", func(t *testing.T) {
+		// Advanced approach with reusable transition config
+		customTransitions := transitions.MustNew(map[string][]string{
+			"online":  {"offline", "unknown"},
+			"offline": {"online", "unknown"},
+			"unknown": {},
+		})
+		machine, err := New("online", customTransitions)
 		require.NoError(t, err)
+		require.NotNil(t, machine)
+		assert.Equal(t, "online", machine.GetState())
 
-		// Online -> Offline (allowed)
-		err = machine.Transition(StatusOffline)
+		// Test basic transition
+		err = machine.Transition("offline")
 		require.NoError(t, err)
-		assert.Equal(t, StatusOffline, machine.GetState())
-
-		// Offline -> Online (allowed)
-		err = machine.Transition(StatusOnline)
-		require.NoError(t, err)
-		assert.Equal(t, StatusOnline, machine.GetState())
-
-		// Online -> Unknown (allowed)
-		err = machine.Transition(StatusUnknown)
-		require.NoError(t, err)
-		assert.Equal(t, StatusUnknown, machine.GetState())
-	})
-
-	t.Run("Test disallowed transitions from Unknown", func(t *testing.T) {
-		machine, err := New(StatusUnknown, customTransitions)
-		require.NoError(t, err)
-
-		// Unknown -> Online (not allowed)
-		err = machine.Transition(StatusOnline)
-		require.ErrorIs(t, err, ErrInvalidStateTransition)
-		assert.Equal(t, StatusUnknown, machine.GetState())
-
-		// Unknown -> Offline (not allowed)
-		err = machine.Transition(StatusOffline)
-		require.ErrorIs(t, err, ErrInvalidStateTransition)
-		assert.Equal(t, StatusUnknown, machine.GetState())
+		assert.Equal(t, "offline", machine.GetState())
 	})
 }
 
@@ -153,6 +94,45 @@ func TestReadme_CustomStatesAndTransitions(t *testing.T) {
 func TestReadme_FSMCreationExamples(t *testing.T) {
 	t.Parallel()
 
+	t.Run("Simple constructor with inline transitions", func(t *testing.T) {
+		// Simple constructor with inline transitions
+		machine, err := NewSimple("online", map[string][]string{
+			"online":  {"offline"},
+			"offline": {"online"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, machine)
+		assert.Equal(t, "online", machine.GetState())
+	})
+
+	t.Run("Advanced constructor with predefined transitions", func(t *testing.T) {
+		// Advanced constructor with predefined transitions
+		machine, err := New(transitions.StatusNew, transitions.Typical)
+		require.NoError(t, err)
+		require.NotNil(t, machine)
+		assert.Equal(t, transitions.StatusNew, machine.GetState())
+	})
+
+	t.Run("With custom logger options", func(t *testing.T) {
+		// With custom logger options
+		handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})
+		logger := slog.New(handler)
+		machine, err := NewSimple("online", map[string][]string{
+			"online":  {"offline"},
+			"offline": {"online"},
+		}, WithLogger(logger))
+		require.NoError(t, err)
+		require.NotNil(t, machine)
+		assert.Equal(t, "online", machine.GetState())
+	})
+}
+
+// TestReadme_PreTransitionHooks tests the pre-transition hook example from README.md
+func TestReadme_PreTransitionHooks(t *testing.T) {
+	t.Parallel()
+
 	const (
 		StatusOnline  = "StatusOnline"
 		StatusOffline = "StatusOffline"
@@ -165,22 +145,213 @@ func TestReadme_FSMCreationExamples(t *testing.T) {
 		StatusUnknown: {},
 	})
 
-	t.Run("Create with default options", func(t *testing.T) {
-		machine, err := New(StatusOnline, customTransitions)
-		require.NoError(t, err)
-		require.NotNil(t, machine)
-		assert.Equal(t, StatusOnline, machine.GetState())
+	logger := slog.Default()
+	registry, err := hooks.NewRegistry(
+		hooks.WithLogger(logger),
+		hooks.WithTransitions(customTransitions),
+	)
+	require.NoError(t, err)
+
+	connectionEstablished := false
+	establishConnection := func() error {
+		connectionEstablished = true
+		return nil
+	}
+
+	err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
+		return establishConnection()
+	})
+	require.NoError(t, err)
+
+	machine, err := New(StatusOffline, customTransitions,
+		WithLogger(logger),
+		WithCallbackRegistry(registry),
+	)
+	require.NoError(t, err)
+
+	err = machine.Transition(StatusOnline)
+	require.NoError(t, err)
+	assert.Equal(t, StatusOnline, machine.GetState())
+	assert.True(t, connectionEstablished)
+}
+
+// TestReadme_PostTransitionHooks tests the post-transition hook example from README.md
+func TestReadme_PostTransitionHooks(t *testing.T) {
+	t.Parallel()
+
+	const (
+		StatusOnline  = "StatusOnline"
+		StatusOffline = "StatusOffline"
+		StatusUnknown = "StatusUnknown"
+	)
+
+	customTransitions := transitions.MustNew(map[string][]string{
+		StatusOnline:  {StatusOffline, StatusUnknown},
+		StatusOffline: {StatusOnline, StatusUnknown},
+		StatusUnknown: {},
 	})
 
-	t.Run("Create with custom logger options", func(t *testing.T) {
-		handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})
-		machine, err := New(StatusOnline, customTransitions, WithLogHandler(handler))
-		require.NoError(t, err)
-		require.NotNil(t, machine)
-		assert.Equal(t, StatusOnline, machine.GetState())
+	logger := slog.Default()
+	registry, err := hooks.NewRegistry(
+		hooks.WithLogger(logger),
+		hooks.WithTransitions(customTransitions),
+	)
+	require.NoError(t, err)
+
+	var recordedTransitions []string
+	recordTransition := func(from, to string) {
+		recordedTransitions = append(recordedTransitions, from+"->"+to)
+	}
+
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
+		recordTransition(from, to)
 	})
+	require.NoError(t, err)
+
+	machine, err := New(StatusOffline, customTransitions,
+		WithLogger(logger),
+		WithCallbackRegistry(registry),
+	)
+	require.NoError(t, err)
+
+	err = machine.Transition(StatusOnline)
+	require.NoError(t, err)
+
+	err = machine.Transition(StatusOffline)
+	require.NoError(t, err)
+
+	expectedTransitions := []string{
+		StatusOffline + "->" + StatusOnline,
+		StatusOnline + "->" + StatusOffline,
+	}
+	assert.Equal(t, expectedTransitions, recordedTransitions)
+}
+
+// TestReadme_CombiningCallbacks tests the combining callbacks example from README.md
+func TestReadme_CombiningCallbacks(t *testing.T) {
+	t.Parallel()
+
+	const (
+		StatusOnline  = "StatusOnline"
+		StatusOffline = "StatusOffline"
+		StatusUnknown = "StatusUnknown"
+	)
+
+	customTransitions := transitions.MustNew(map[string][]string{
+		StatusOnline:  {StatusOffline, StatusUnknown},
+		StatusOffline: {StatusOnline, StatusUnknown},
+		StatusUnknown: {},
+	})
+
+	logger := slog.Default()
+	registry, err := hooks.NewRegistry(
+		hooks.WithLogger(logger),
+		hooks.WithTransitions(customTransitions),
+	)
+	require.NoError(t, err)
+
+	authorized := true
+	cleanupCalled := false
+	connectCalled := false
+	notifyCalled := false
+
+	isAuthorized := func() bool { return authorized }
+	cleanup := func() error {
+		cleanupCalled = true
+		return nil
+	}
+	connect := func() error {
+		connectCalled = true
+		return nil
+	}
+	notifyStateChange := func(_, _ string) {
+		notifyCalled = true
+	}
+
+	err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
+		if !isAuthorized() {
+			return errors.New("not authorized")
+		}
+		if err := cleanup(); err != nil {
+			return err
+		}
+		return connect()
+	})
+	require.NoError(t, err)
+
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
+		notifyStateChange(from, to)
+	})
+	require.NoError(t, err)
+
+	machine, err := New(StatusOffline, customTransitions,
+		WithLogger(logger),
+		WithCallbackRegistry(registry),
+	)
+	require.NoError(t, err)
+
+	err = machine.Transition(StatusOnline)
+	require.NoError(t, err)
+	assert.Equal(t, StatusOnline, machine.GetState())
+	assert.True(t, cleanupCalled)
+	assert.True(t, connectCalled)
+	assert.True(t, notifyCalled)
+}
+
+// TestReadme_WildcardPatterns tests the wildcard pattern example from README.md
+func TestReadme_WildcardPatterns(t *testing.T) {
+	t.Parallel()
+
+	const (
+		StatusRunning = "StatusRunning"
+		StatusError   = "StatusError"
+		StatusStopped = "StatusStopped"
+	)
+
+	customTransitions := transitions.MustNew(map[string][]string{
+		StatusRunning: {StatusStopped, StatusError},
+		StatusStopped: {StatusRunning, StatusError},
+		StatusError:   {},
+	})
+
+	logger := slog.Default()
+	registry, err := hooks.NewRegistry(
+		hooks.WithLogger(logger),
+		hooks.WithTransitions(customTransitions),
+	)
+	require.NoError(t, err)
+
+	var preErrorTransitions []string
+	var postRunningTransitions []string
+	var allTransitions []string
+
+	err = registry.RegisterPreTransitionHook([]string{"*"}, []string{StatusError}, func(ctx context.Context, from, to string) error {
+		preErrorTransitions = append(preErrorTransitions, from)
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = registry.RegisterPostTransitionHook([]string{StatusRunning}, []string{"*"}, func(ctx context.Context, from, to string) {
+		postRunningTransitions = append(postRunningTransitions, to)
+	})
+	require.NoError(t, err)
+
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
+		allTransitions = append(allTransitions, from+"->"+to)
+	})
+	require.NoError(t, err)
+
+	machine, err := New(StatusRunning, customTransitions,
+		WithLogger(logger),
+		WithCallbackRegistry(registry),
+	)
+	require.NoError(t, err)
+
+	err = machine.Transition(StatusError)
+	require.NoError(t, err)
+	assert.Equal(t, []string{StatusRunning}, preErrorTransitions)
+	assert.Equal(t, []string{StatusError}, postRunningTransitions)
+	assert.Equal(t, []string{StatusRunning + "->" + StatusError}, allTransitions)
 }
 
 // TestReadme_StateTransitionOperations tests state transition examples from README.md
@@ -236,138 +407,4 @@ func TestReadme_StateTransitionOperations(t *testing.T) {
 		currentState = machine.GetState()
 		assert.Equal(t, StatusOffline, currentState)
 	})
-}
-
-// TestReadme_StateChangeNotifications tests the state change notification examples from README.md
-func TestReadme_StateChangeNotifications(t *testing.T) {
-	t.Parallel()
-
-	t.Run("Basic state change notifications example", func(t *testing.T) {
-		// Create standalone broadcast manager
-		broadcastManager := broadcast.NewManager(slog.Default().Handler())
-
-		// Create callback registry with broadcast hook
-		registry, err := hooks.NewRegistry(
-			hooks.WithLogger(slog.Default()),
-			hooks.WithTransitions(transitions.Typical),
-		)
-		require.NoError(t, err)
-
-		err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
-		require.NoError(t, err)
-
-		machine, err := New(transitions.StatusNew, transitions.Typical,
-			WithCallbackRegistry(registry),
-		)
-		require.NoError(t, err)
-
-		// Get notification channel with default async behavior (timeout=0)
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-
-		stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
-		require.NoError(t, err)
-
-		// Send initial state
-		broadcastManager.Broadcast(machine.GetState())
-
-		// Track received states
-		var receivedStates []string
-		var wg sync.WaitGroup
-
-		// Process state changes (replicating README example)
-		wg.Go(func() {
-			for state := range stateChan {
-				// Handle state change
-				receivedStates = append(receivedStates, state)
-			}
-		})
-
-		// Perform some transitions
-		err = machine.Transition(transitions.StatusBooting)
-		require.NoError(t, err)
-
-		err = machine.Transition(transitions.StatusRunning)
-		require.NoError(t, err)
-
-		// Cancel to close channel
-		cancel()
-
-		// Wait for goroutine to finish
-		wg.Wait()
-
-		// Verify we received all state changes
-		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting, transitions.StatusRunning}
-		assert.Equal(t, expectedStates, receivedStates)
-	})
-}
-
-// TestReadme_BroadcastModes tests the broadcast mode examples from README.md
-func TestReadme_BroadcastModes(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name    string
-		timeout time.Duration
-	}{
-		{"Async mode (timeout=0) - default behavior", 0},
-		{"10s timeout", 10 * time.Second},
-		{"1hr custom timeout", 1 * time.Hour},
-		{"Infinite blocking (negative timeout)", -1 * time.Second},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Create standalone broadcast manager
-			broadcastManager := broadcast.NewManager(slog.Default().Handler())
-
-			// Create callback registry with broadcast hook
-			registry, err := hooks.NewRegistry(
-				hooks.WithLogger(slog.Default()),
-				hooks.WithTransitions(transitions.Typical),
-			)
-			require.NoError(t, err)
-
-			err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
-			require.NoError(t, err)
-
-			machine, err := New(transitions.StatusNew, transitions.Typical,
-				WithCallbackRegistry(registry),
-			)
-			require.NoError(t, err)
-
-			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-			defer cancel()
-
-			var stateChan <-chan string
-			if tc.timeout == 0 {
-				stateChan, err = broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
-			} else {
-				stateChan, err = broadcastManager.GetStateChan(ctx, broadcast.WithTimeout(tc.timeout))
-			}
-			require.NoError(t, err)
-
-			// Send initial state
-			broadcastManager.Broadcast(machine.GetState())
-
-			var receivedStates []string
-			var wg sync.WaitGroup
-
-			wg.Go(func() {
-				for state := range stateChan {
-					receivedStates = append(receivedStates, state)
-				}
-			})
-
-			// Perform transition
-			err = machine.Transition(transitions.StatusBooting)
-			require.NoError(t, err)
-
-			cancel()
-			wg.Wait()
-
-			expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
-			assert.Equal(t, expectedStates, receivedStates)
-		})
-	}
 }

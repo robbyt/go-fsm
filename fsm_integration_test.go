@@ -429,3 +429,123 @@ func TestConcurrentTransitionsIntegration(t *testing.T) {
 		assert.Equal(t, StateA, machine.GetState())
 	})
 }
+
+// TestStateChangeNotificationsIntegration tests broadcast-based state change notifications.
+func TestStateChangeNotificationsIntegration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Basic state change notifications", func(t *testing.T) {
+		broadcastManager := broadcast.NewManager(slog.Default().Handler())
+
+		registry, err := hooks.NewRegistry(
+			hooks.WithLogger(slog.Default()),
+			hooks.WithTransitions(transitions.Typical),
+		)
+		require.NoError(t, err)
+
+		err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
+		require.NoError(t, err)
+
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical,
+			fsm.WithCallbackRegistry(registry),
+		)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
+		require.NoError(t, err)
+
+		broadcastManager.Broadcast(machine.GetState())
+
+		var receivedStates []string
+		doneCh := make(chan struct{})
+
+		go func() {
+			defer close(doneCh)
+			for state := range stateChan {
+				receivedStates = append(receivedStates, state)
+			}
+		}()
+
+		err = machine.Transition(transitions.StatusBooting)
+		require.NoError(t, err)
+
+		err = machine.Transition(transitions.StatusRunning)
+		require.NoError(t, err)
+
+		cancel()
+		<-doneCh
+
+		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting, transitions.StatusRunning}
+		assert.Equal(t, expectedStates, receivedStates)
+	})
+}
+
+// TestBroadcastModesIntegration tests different broadcast timeout modes.
+func TestBroadcastModesIntegration(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{"Async mode (timeout=0) - default behavior", 0},
+		{"10s timeout", 10 * time.Second},
+		{"1hr custom timeout", 1 * time.Hour},
+		{"Infinite blocking (negative timeout)", -1 * time.Second},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			broadcastManager := broadcast.NewManager(slog.Default().Handler())
+
+			registry, err := hooks.NewRegistry(
+				hooks.WithLogger(slog.Default()),
+				hooks.WithTransitions(transitions.Typical),
+			)
+			require.NoError(t, err)
+
+			err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
+			require.NoError(t, err)
+
+			machine, err := fsm.New(transitions.StatusNew, transitions.Typical,
+				fsm.WithCallbackRegistry(registry),
+			)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+			defer cancel()
+
+			var stateChan <-chan string
+			if tc.timeout == 0 {
+				stateChan, err = broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
+			} else {
+				stateChan, err = broadcastManager.GetStateChan(ctx, broadcast.WithTimeout(tc.timeout))
+			}
+			require.NoError(t, err)
+
+			broadcastManager.Broadcast(machine.GetState())
+
+			var receivedStates []string
+			doneCh := make(chan struct{})
+
+			go func() {
+				defer close(doneCh)
+				for state := range stateChan {
+					receivedStates = append(receivedStates, state)
+				}
+			}()
+
+			err = machine.Transition(transitions.StatusBooting)
+			require.NoError(t, err)
+
+			cancel()
+			<-doneCh
+
+			expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
+			assert.Equal(t, expectedStates, receivedStates)
+		})
+	}
+}
