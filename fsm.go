@@ -183,6 +183,10 @@ func (fsm *Machine) SetState(state string) error {
 // SetStateWithContext updates the FSM's state with a context, bypassing transition rules and pre-transition hooks.
 // Returns an error if the state is not defined in the transition table.
 func (fsm *Machine) SetStateWithContext(ctx context.Context, state string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("set state canceled: %w", err)
+	}
+
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 
@@ -264,8 +268,14 @@ func (fsm *Machine) TransitionIfCurrentStateWithContext(ctx context.Context, fro
 
 // transition changes the FSM's state from the current state to toState.
 // Assumes the caller holds the write lock.
-// The context is passed to all hooks for request-scoped values and tracing.
+// The context is passed to all hooks for request-scoped values, tracing, and cancellation handling.
+// Hooks are responsible for checking context cancellation themselves if needed.
 func (fsm *Machine) transition(ctx context.Context, toState string) error {
+	// Check if context is already canceled before starting transition
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("transition canceled: %w", err)
+	}
+
 	currentState := fsm.GetState()
 
 	if !fsm.transitions.IsTransitionAllowed(currentState, toState) {

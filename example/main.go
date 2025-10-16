@@ -113,13 +113,12 @@ func main() {
 	<-ctx.Done()
 
 	// Perform graceful shutdown transitions
-	shutdownCtx := context.Background()
-	if err := machine.TransitionWithContext(shutdownCtx, transitions.StatusStopping); err != nil {
+	if err := machine.Transition(transitions.StatusStopping); err != nil {
 		logger.Error("transition to Stopping failed", "error", err)
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	if err := machine.TransitionWithContext(shutdownCtx, transitions.StatusStopped); err != nil {
+	if err := machine.Transition(transitions.StatusStopped); err != nil {
 		logger.Error("transition to Stopped failed", "error", err)
 	}
 
