@@ -28,7 +28,7 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	broadcastManager := broadcast.NewManager(logger)
 
 	// Create callback registry with broadcast hook
-	registry, err := hooks.NewSynchronousCallbackRegistry(
+	registry, err := hooks.NewRegistry(
 		hooks.WithLogger(logger),
 		hooks.WithTransitions(transitions.Typical),
 	)
@@ -247,7 +247,7 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		broadcastManager := broadcast.NewManager(slog.Default())
 
 		// Create callback registry with broadcast hook
-		registry, err := hooks.NewSynchronousCallbackRegistry(
+		registry, err := hooks.NewRegistry(
 			hooks.WithLogger(slog.Default()),
 			hooks.WithTransitions(transitions.Typical),
 		)
@@ -322,7 +322,7 @@ func TestReadme_BroadcastModes(t *testing.T) {
 			broadcastManager := broadcast.NewManager(slog.Default())
 
 			// Create callback registry with broadcast hook
-			registry, err := hooks.NewSynchronousCallbackRegistry(
+			registry, err := hooks.NewRegistry(
 				hooks.WithLogger(slog.Default()),
 				hooks.WithTransitions(transitions.Typical),
 			)

@@ -21,7 +21,7 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 	t.Run("Callbacks execute in correct order during transition", func(t *testing.T) {
 		var executionOrder []string
 
-		reg, err := hooks.NewSynchronousCallbackRegistry(
+		reg, err := hooks.NewRegistry(
 			hooks.WithLogger(slog.Default()),
 			hooks.WithTransitions(transitions.Typical),
 		)
@@ -51,7 +51,7 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 	t.Run("Multiple callbacks of same type execute in FIFO order", func(t *testing.T) {
 		var order []int
 
-		reg, err := hooks.NewSynchronousCallbackRegistry(
+		reg, err := hooks.NewRegistry(
 			hooks.WithLogger(slog.Default()),
 			hooks.WithTransitions(transitions.Typical),
 		)
@@ -90,7 +90,7 @@ func TestPostTransitionHookIntegration(t *testing.T) {
 	t.Run("Post-transition hook executes after every transition", func(t *testing.T) {
 		hookCallCount := 0
 
-		reg, err := hooks.NewSynchronousCallbackRegistry(
+		reg, err := hooks.NewRegistry(
 			hooks.WithLogger(slog.Default()),
 			hooks.WithTransitions(transitions.Typical),
 		)
@@ -120,7 +120,7 @@ func TestBroadcastMechanismIntegration(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Broadcast mechanism works with custom registry", func(t *testing.T) {
-		reg, err := hooks.NewSynchronousCallbackRegistry(
+		reg, err := hooks.NewRegistry(
 			hooks.WithLogger(slog.Default()),
 			hooks.WithTransitions(transitions.Typical),
 		)
@@ -171,7 +171,7 @@ func TestPanicRecoveryIntegration(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Panic in pre-transition hook prevents transition", func(t *testing.T) {
-		reg, err := hooks.NewSynchronousCallbackRegistry(
+		reg, err := hooks.NewRegistry(
 			hooks.WithLogger(slog.Default()),
 			hooks.WithTransitions(transitions.Typical),
 		)

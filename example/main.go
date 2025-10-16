@@ -34,7 +34,7 @@ import (
 
 func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machine, error) {
 	// Create callback registry
-	registry, err := hooks.NewSynchronousCallbackRegistry(
+	registry, err := hooks.NewRegistry(
 		hooks.WithLogger(logger),
 		hooks.WithTransitions(transitions.Typical),
 	)

@@ -16,7 +16,7 @@ func TestExecutePreTransitionHooks(t *testing.T) {
 
 	t.Run("Transition hook executes successfully", func(t *testing.T) {
 		called := false
-		reg, err := NewSynchronousCallbackRegistry(WithLogger(slog.Default()))
+		reg, err := NewRegistry(WithLogger(slog.Default()))
 		require.NoError(t, err)
 		err = reg.RegisterPreTransitionHook([]string{"New"}, []string{"Booting"}, func(ctx context.Context, from, to string) error {
 			called = true
@@ -30,7 +30,7 @@ func TestExecutePreTransitionHooks(t *testing.T) {
 	})
 
 	t.Run("Transition hook failure returns error", func(t *testing.T) {
-		reg, err := NewSynchronousCallbackRegistry(WithLogger(slog.Default()))
+		reg, err := NewRegistry(WithLogger(slog.Default()))
 		require.NoError(t, err)
 		err = reg.RegisterPreTransitionHook([]string{"New"}, []string{"Booting"}, func(ctx context.Context, from, to string) error {
 			return errors.New("action failed")
@@ -48,7 +48,7 @@ func TestExecutePostTransitionHooks(t *testing.T) {
 
 	t.Run("Post-transition hook executes", func(t *testing.T) {
 		called := false
-		reg, err := NewSynchronousCallbackRegistry(WithLogger(slog.Default()))
+		reg, err := NewRegistry(WithLogger(slog.Default()))
 		require.NoError(t, err)
 		err = reg.RegisterPostTransitionHook([]string{"New"}, []string{"Booting"}, func(ctx context.Context, from, to string) {
 			called = true
@@ -61,7 +61,7 @@ func TestExecutePostTransitionHooks(t *testing.T) {
 
 	t.Run("Multiple hooks execute in FIFO order", func(t *testing.T) {
 		var order []int
-		reg, err := NewSynchronousCallbackRegistry(WithLogger(slog.Default()))
+		reg, err := NewRegistry(WithLogger(slog.Default()))
 		require.NoError(t, err)
 		err = reg.RegisterPostTransitionHook([]string{"New"}, []string{"Booting"}, func(ctx context.Context, from, to string) {
 			order = append(order, 1)
@@ -81,7 +81,7 @@ func TestPanicRecovery(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Panic in pre-transition hook is recovered and returned as error", func(t *testing.T) {
-		reg, err := NewSynchronousCallbackRegistry(WithLogger(slog.Default()))
+		reg, err := NewRegistry(WithLogger(slog.Default()))
 		require.NoError(t, err)
 		err = reg.RegisterPreTransitionHook([]string{"New"}, []string{"Booting"}, func(ctx context.Context, from, to string) error {
 			panic("transition panic")
@@ -95,7 +95,7 @@ func TestPanicRecovery(t *testing.T) {
 	})
 
 	t.Run("Panic in post-transition hook is recovered and logged", func(t *testing.T) {
-		reg, err := NewSynchronousCallbackRegistry(WithLogger(slog.Default()))
+		reg, err := NewRegistry(WithLogger(slog.Default()))
 		require.NoError(t, err)
 		err = reg.RegisterPostTransitionHook([]string{"New"}, []string{"Booting"}, func(ctx context.Context, from, to string) {
 			panic("hook panic")
@@ -111,7 +111,7 @@ func TestClear(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Clear removes all callbacks", func(t *testing.T) {
-		reg, err := NewSynchronousCallbackRegistry(WithLogger(slog.Default()))
+		reg, err := NewRegistry(WithLogger(slog.Default()))
 		require.NoError(t, err)
 
 		err = reg.RegisterPreTransitionHook([]string{"New"}, []string{"Booting"}, func(ctx context.Context, from, to string) error {
@@ -144,7 +144,7 @@ func TestPatternExpansion(t *testing.T) {
 
 	t.Run("Wildcard pattern expands to all states", func(t *testing.T) {
 		called := make(map[string]bool)
-		reg, err := NewSynchronousCallbackRegistry(
+		reg, err := NewRegistry(
 			WithLogger(slog.Default()),
 			WithTransitions(trans),
 		)
@@ -169,7 +169,7 @@ func TestPatternExpansion(t *testing.T) {
 
 	t.Run("Multiple concrete states", func(t *testing.T) {
 		var executionOrder []string
-		reg, err := NewSynchronousCallbackRegistry(
+		reg, err := NewRegistry(
 			WithLogger(slog.Default()),
 			WithTransitions(trans),
 		)
@@ -195,7 +195,7 @@ func TestPatternExpansion(t *testing.T) {
 	})
 
 	t.Run("Invalid state returns error", func(t *testing.T) {
-		reg, err := NewSynchronousCallbackRegistry(
+		reg, err := NewRegistry(
 			WithLogger(slog.Default()),
 			WithTransitions(trans),
 		)
@@ -213,7 +213,7 @@ func TestPatternExpansion(t *testing.T) {
 	})
 
 	t.Run("Wildcard without state table returns error", func(t *testing.T) {
-		reg, err := NewSynchronousCallbackRegistry(WithLogger(slog.Default()))
+		reg, err := NewRegistry(WithLogger(slog.Default()))
 		require.NoError(t, err)
 
 		err = reg.RegisterPreTransitionHook(

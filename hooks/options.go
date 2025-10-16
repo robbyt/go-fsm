@@ -8,11 +8,11 @@ import (
 )
 
 // Option is a functional option for configuring SynchronousCallbackRegistry.
-type Option func(*SynchronousCallbackRegistry) error
+type Option func(*Registry) error
 
 // WithLogger sets the logger for the registry.
 func WithLogger(logger *slog.Logger) Option {
-	return func(r *SynchronousCallbackRegistry) error {
+	return func(r *Registry) error {
 		if logger == nil {
 			return fmt.Errorf("logger cannot be nil")
 		}
@@ -23,7 +23,7 @@ func WithLogger(logger *slog.Logger) Option {
 
 // WithLogHandler create a new slog instance for this registry using your slog.Handler implementation.
 func WithLogHandler(handler slog.Handler) Option {
-	return func(r *SynchronousCallbackRegistry) error {
+	return func(r *Registry) error {
 		if handler == nil {
 			return fmt.Errorf("log handler cannot be nil")
 		}
@@ -34,7 +34,7 @@ func WithLogHandler(handler slog.Handler) Option {
 
 // WithTransitions sets the state transition table for pattern validation and expansion.
 func WithTransitions(trans *transitions.Config) Option {
-	return func(r *SynchronousCallbackRegistry) error {
+	return func(r *Registry) error {
 		if trans == nil {
 			return fmt.Errorf("transitions cannot be nil")
 		}
