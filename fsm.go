@@ -63,7 +63,6 @@ type Machine struct {
 }
 
 // persistentState is used for JSON marshaling/unmarshaling.
-// TODO: add ALL states and transitions to the JSON representation
 type persistentState struct {
 	State string `json:"state"`
 }

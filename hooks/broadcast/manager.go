@@ -90,7 +90,9 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 func (m *Manager) Broadcast(state string) {
 	logger := slog.New(m.logger.WithGroup("broadcast")).With("state", state)
 
-	// Lock during the entire broadcast
+	// Lock during the entire broadcast to ensure all subscribers receive broadcasts
+	// in the same order, preventing race conditions where concurrent broadcasts
+	// could arrive at different subscribers in different orders.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

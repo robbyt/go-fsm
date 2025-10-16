@@ -163,14 +163,14 @@ if err != nil {
 	// Handle error
 }
 
-err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
+err = registry.RegisterPreTransitionHook([]string{"offline"}, []string{"online"}, func(ctx context.Context, from, to string) error {
 	return establishConnection()
 })
 if err != nil {
 	// Handle error
 }
 
-machine, err := fsm.New(StatusOffline, customTransitions,
+machine, err := fsm.New("offline", customTransitions,
 	fsm.WithLogger(logger),
 	fsm.WithCallbackRegistry(registry),
 )
@@ -197,7 +197,7 @@ if err != nil {
 	// Handle error
 }
 
-machine, err := fsm.New(StatusOffline, customTransitions,
+machine, err := fsm.New("offline", customTransitions,
 	fsm.WithLogger(logger),
 	fsm.WithCallbackRegistry(registry),
 )
@@ -217,7 +217,7 @@ if err != nil {
 }
 
 // Pre-transition hook - validate and perform transition work
-err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
+err = registry.RegisterPreTransitionHook([]string{"offline"}, []string{"online"}, func(ctx context.Context, from, to string) error {
 	if !isAuthorized() {
 		return errors.New("not authorized")
 	}
@@ -238,13 +238,15 @@ if err != nil {
 	// Handle error
 }
 
-machine, err := fsm.New(StatusOffline, customTransitions,
+machine, err := fsm.New("offline", customTransitions,
 	fsm.WithLogger(logger),
 	fsm.WithCallbackRegistry(registry),
 )
 ```
 
 #### Wildcard Pattern Matching
+
+**Important**: Wildcard patterns require the registry to be created with `hooks.WithTransitions()` option so it knows which states exist.
 
 Hooks support wildcard patterns using `"*"` to match any state. This is useful for registering hooks that should execute for multiple state transitions without listing every combination explicitly.
 
@@ -265,8 +267,6 @@ err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx
 	metrics.RecordTransition(from, to)
 })
 ```
-
-**Important**: Wildcard patterns require the registry to be created with `hooks.WithTransitions()` option so it knows which states exist.
 
 #### Performance Considerations
 

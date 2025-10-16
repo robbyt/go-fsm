@@ -5,7 +5,7 @@ import (
 	"log/slog"
 )
 
-// Option is a functional option for configuring SynchronousCallbackRegistry.
+// Option is a functional option for configuring Registry.
 type Option func(*Registry) error
 
 // WithLogger sets the logger for the registry.

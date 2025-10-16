@@ -1,6 +1,8 @@
+// Package transitions provides predefined state constants and transition configurations
+// for common FSM patterns.
 package transitions
 
-// Collection of common statuses
+// Common state constants
 const (
 	StatusNew       = "New"
 	StatusBooting   = "Booting"
