@@ -256,7 +256,7 @@ func (fsm *Machine) transition(toState string) error {
 	fsm.setState(toState)
 	fsm.logger.Debug("Transition successful", "from", currentState, "to", toState)
 
-	// 4. Execute post-transition hooks (includes broadcast)
+	// 4. Execute post-transition hooks
 	if fsm.callbacks != nil {
 		fsm.callbacks.ExecutePostTransitionHooks(currentState, toState)
 	}
@@ -290,11 +290,6 @@ func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
 
 	currentState := fsm.GetState()
 	if currentState != fromState {
-		fsm.logger.Debug(
-			"Conditional transition skipped: current state mismatch",
-			"current", currentState,
-			"expected", fromState,
-			"target", toState)
 		return fmt.Errorf(
 			"%w: current state is '%s', expected '%s' for transition to '%s'",
 			ErrCurrentStateIncorrect,
