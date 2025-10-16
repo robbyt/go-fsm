@@ -54,7 +54,7 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 	}
 
 	// Create standalone broadcast manager
-	broadcastManager := broadcast.NewManager(logger)
+	broadcastManager := broadcast.NewManager(logger.Handler())
 
 	// Register broadcast hook to enable state change notifications
 	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())

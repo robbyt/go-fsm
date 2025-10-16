@@ -38,14 +38,14 @@ func newTestLogger() *slog.Logger {
 func TestNewManager(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 	assert.NotNil(t, manager)
 }
 
 func TestGetStateChan(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -90,7 +90,7 @@ func TestGetStateChan(t *testing.T) {
 func TestGetStateChan_WithBufferSize(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 
 	ch, err := manager.GetStateChan(t.Context(), broadcast.WithBufferSize(5))
 	require.NoError(t, err)
@@ -101,7 +101,7 @@ func TestGetStateChan_WithBufferSize(t *testing.T) {
 func TestGetStateChan_WithCustomChannel(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 
 	customCh := make(chan string, 3)
 	ch, err := manager.GetStateChan(t.Context(), broadcast.WithCustomChannel(customCh))
@@ -127,7 +127,7 @@ func TestGetStateChan_WithCustomChannel(t *testing.T) {
 func TestBroadcast_AsyncMode(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -178,7 +178,7 @@ func TestBroadcast_SyncMode(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
-		manager := broadcast.NewManager(newTestLogger())
+		manager := broadcast.NewManager(newTestLogger().Handler())
 
 		// Timeout mode with 500ms timeout
 		ch, err := manager.GetStateChan(t.Context(),
@@ -231,7 +231,7 @@ func TestBroadcast_SyncMode(t *testing.T) {
 func TestBroadcast_TimeoutMode(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 
 	// Timeout mode with short timeout
 	ch, err := manager.GetStateChan(t.Context(),
@@ -263,7 +263,7 @@ func TestBroadcast_GuaranteedDeliveryMode(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
-		manager := broadcast.NewManager(newTestLogger())
+		manager := broadcast.NewManager(newTestLogger().Handler())
 
 		// Guaranteed delivery mode (negative timeout)
 		ch, err := manager.GetStateChan(t.Context(),
@@ -318,7 +318,7 @@ func TestBroadcast_GuaranteedDeliveryMode(t *testing.T) {
 func TestBroadcast_MultipleSubscribers(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 
 	ctx := t.Context()
 
@@ -365,7 +365,7 @@ func TestBroadcast_MultipleSubscribers(t *testing.T) {
 func TestBroadcast_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 
 	ctx1, cancel1 := context.WithCancel(t.Context())
 	ctx2, cancel2 := context.WithCancel(t.Context())
@@ -409,7 +409,7 @@ func TestBroadcast_ContextCancellation(t *testing.T) {
 func TestGetStateChan_CustomChannelNotClosedOnContextCancel(t *testing.T) {
 	t.Parallel()
 
-	manager := broadcast.NewManager(newTestLogger())
+	manager := broadcast.NewManager(newTestLogger().Handler())
 
 	// Test 1: Default internal channel should be closed when context is cancelled
 	ctx1, cancel1 := context.WithCancel(t.Context())

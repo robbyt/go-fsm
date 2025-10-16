@@ -29,16 +29,16 @@ import (
 type Manager struct {
 	mu          sync.Mutex
 	subscribers sync.Map
-	logger      *slog.Logger
+	logger      slog.Handler
 }
 
 // NewManager creates a new broadcast manager.
-func NewManager(logger *slog.Logger) *Manager {
-	if logger == nil {
-		logger = slog.Default()
+func NewManager(handler slog.Handler) *Manager {
+	if handler == nil {
+		handler = slog.Default().Handler()
 	}
 	return &Manager{
-		logger: logger,
+		logger: handler,
 	}
 }
 
@@ -81,41 +81,6 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 	return ch, nil
 }
 
-// BroadcastHook returns a function compatible with hooks.ActionFunc signature.
-// This can be passed directly to RegisterPostTransitionHook without manual wrapping.
-func (m *Manager) BroadcastHook() func(ctx context.Context, from, to string) {
-	return func(ctx context.Context, from, to string) {
-		m.Broadcast(to)
-	}
-}
-
-// unsubscribe removes a channel from receiving broadcasts.
-func (m *Manager) unsubscribe(ch chan string) {
-	m.mu.Lock()
-	m.subscribers.Delete(ch)
-	m.mu.Unlock()
-}
-
-// iterSubscribers returns a sequence of all subscriber channels and their configs.
-func (m *Manager) iterSubscribers() iter.Seq2[chan string, *Config] {
-	return func(yield func(chan string, *Config) bool) {
-		m.subscribers.Range(func(key, value any) bool {
-			ch, ok := key.(chan string)
-			if !ok {
-				return true
-			}
-
-			config, ok := value.(*Config)
-			if !ok {
-				m.logger.Error("Invalid subscriber config type; skipping subscriber")
-				return true
-			}
-
-			return yield(ch, config)
-		})
-	}
-}
-
 // Broadcast sends the state to all subscriber channels.
 // Delivery behavior depends on subscriber timeout configuration:
 // - timeout = 0 (default): best-effort, drops message if channel is full
@@ -123,7 +88,7 @@ func (m *Manager) iterSubscribers() iter.Seq2[chan string, *Config] {
 // - timeout < 0: blocks indefinitely until delivered (guaranteed delivery)
 // The mutex ensures broadcasts are always serial to maintain consistent ordering.
 func (m *Manager) Broadcast(state string) {
-	logger := m.logger.WithGroup("broadcast").With("state", state)
+	logger := slog.New(m.logger.WithGroup("broadcast")).With("state", state)
 
 	// Lock during the entire broadcast to prevent race conditions
 	m.mu.Lock()
@@ -164,4 +129,39 @@ func (m *Manager) Broadcast(state string) {
 	}
 
 	wg.Wait()
+}
+
+// BroadcastHook returns a function compatible with hooks.ActionFunc signature.
+// This can be passed directly to RegisterPostTransitionHook without manual wrapping.
+func (m *Manager) BroadcastHook() func(ctx context.Context, from, to string) {
+	return func(ctx context.Context, from, to string) {
+		m.Broadcast(to)
+	}
+}
+
+// unsubscribe removes a channel from receiving broadcasts.
+func (m *Manager) unsubscribe(ch chan string) {
+	m.mu.Lock()
+	m.subscribers.Delete(ch)
+	m.mu.Unlock()
+}
+
+// iterSubscribers returns a sequence of all subscriber channels and their configs.
+func (m *Manager) iterSubscribers() iter.Seq2[chan string, *Config] {
+	return func(yield func(chan string, *Config) bool) {
+		m.subscribers.Range(func(key, value any) bool {
+			ch, ok := key.(chan string)
+			if !ok {
+				return true
+			}
+
+			config, ok := value.(*Config)
+			if !ok {
+				slog.New(m.logger).Error("Invalid subscriber config type; skipping subscriber")
+				return true
+			}
+
+			return yield(ch, config)
+		})
+	}
 }

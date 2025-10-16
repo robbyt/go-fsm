@@ -25,7 +25,7 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	// Create standalone broadcast manager
-	broadcastManager := broadcast.NewManager(logger)
+	broadcastManager := broadcast.NewManager(logger.Handler())
 
 	// Create callback registry with broadcast hook
 	registry, err := hooks.NewRegistry(
@@ -244,7 +244,7 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 
 	t.Run("Basic state change notifications example", func(t *testing.T) {
 		// Create standalone broadcast manager
-		broadcastManager := broadcast.NewManager(slog.Default())
+		broadcastManager := broadcast.NewManager(slog.Default().Handler())
 
 		// Create callback registry with broadcast hook
 		registry, err := hooks.NewRegistry(
@@ -319,7 +319,7 @@ func TestReadme_BroadcastModes(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create standalone broadcast manager
-			broadcastManager := broadcast.NewManager(slog.Default())
+			broadcastManager := broadcast.NewManager(slog.Default().Handler())
 
 			// Create callback registry with broadcast hook
 			registry, err := hooks.NewRegistry(

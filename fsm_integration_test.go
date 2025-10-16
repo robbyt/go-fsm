@@ -132,7 +132,7 @@ func TestBroadcastMechanismIntegration(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create standalone broadcast manager
-		broadcastManager := broadcast.NewManager(slog.Default())
+		broadcastManager := broadcast.NewManager(slog.Default().Handler())
 
 		// Manually register broadcast hook
 		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())

@@ -1,116 +1,98 @@
 # Broadcast Package
 
-The broadcast package provides state change notification functionality for the FSM. It manages subscribers and delivers state updates to channels with configurable delivery guarantees.
+The broadcast package implements a post-transition hook for the FSM that notifies subscribers when state changes occur. It manages subscriber channels and delivers state updates with configurable delivery guarantees.
 
 ## Purpose
 
-This package allows subscribers to receive notifications whenever the FSM transitions to a new state. Each subscriber gets their own channel that receives state updates based on their delivery preferences.
+This package integrates with the FSM's hook system to provide state change notifications. When registered as a post-transition hook, it broadcasts the new state to all subscribers through their individual channels.
 
-## Basic Usage
+## Integration with FSM
+
+The broadcast manager plugs into the FSM through the hooks registry:
 
 ```go
-package main
-
 import (
-	"context"
-	"log/slog"
-
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/hooks"
 	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
-func main() {
-	// Create a broadcast manager
-	manager := broadcast.NewManager(slog.Default())
+// Create FSM and hook registry
+machine, _ := fsm.New(transitions.StatusNew, transitions.Typical,
+	fsm.WithCallbacks(registry))
 
-	// Subscribe to state changes
-	ctx := context.Background()
-	stateChan, err := manager.GetStateChan(ctx)
-	if err != nil {
-		panic(err)
-	}
+// Create broadcast manager
+manager := broadcast.NewManager(machine.Handler())
 
-	// Read state changes
-	go func() {
-		for state := range stateChan {
-			slog.Info("state changed", "state", state)
-		}
-	}()
+// Register as post-transition hook for all state changes
+registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"},
+	manager.BroadcastHook())
+```
 
-	// Broadcast state changes
-	manager.Broadcast(transitions.StatusNew)
-	manager.Broadcast(transitions.StatusBooting)
-	manager.Broadcast(transitions.StatusRunning)
+The `BroadcastHook()` method returns a function compatible with `hooks.ActionFunc`, making it easy to register without manual wrapping.
+
+## Subscribing to State Changes
+
+Subscribers receive state changes through channels. The context controls the subscription lifetime:
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+stateChan, _ := manager.GetStateChan(ctx)
+
+for state := range stateChan {
+	// Handle state change
 }
 ```
 
 ## Delivery Modes
 
-The broadcast package supports three delivery modes controlled by the timeout duration:
+The broadcast package supports three delivery modes based on the timeout configuration:
 
-### Best-Effort Delivery (timeout = 0, default)
-
-Drops messages if the subscriber's channel is full. Non-blocking and has no performance impact on broadcasts.
+### Best-Effort (default)
+Drops messages immediately if the channel is full. Non-blocking and has no performance impact on the FSM.
 
 ```go
-// Default mode
 ch, _ := manager.GetStateChan(ctx)
-
-// With larger buffer
-ch, _ := manager.GetStateChan(ctx, broadcast.WithBufferSize(100))
 ```
 
-### Delivery with Timeout (timeout > 0)
-
-Blocks the broadcast for up to the specified duration waiting for channel space. Drops the message if the timeout is reached.
+### Timeout-Based
+Blocks the FSM broadcast for up to the specified duration. Drops the message if timeout is reached.
 
 ```go
 ch, _ := manager.GetStateChan(ctx,
 	broadcast.WithTimeout(5*time.Second),
-	broadcast.WithBufferSize(10),
-)
+	broadcast.WithBufferSize(10))
 ```
 
-### Guaranteed Delivery (timeout < 0)
-
-Blocks the broadcast indefinitely until the message is delivered. Use when message loss is unacceptable.
+### Guaranteed Delivery
+Blocks the FSM broadcast indefinitely until the message is delivered. Use when message loss is unacceptable.
 
 ```go
 ch, _ := manager.GetStateChan(ctx,
-	broadcast.WithTimeout(-1), // negative timeout = wait forever
-	broadcast.WithBufferSize(10),
-)
+	broadcast.WithTimeout(-1), // negative = wait forever
+	broadcast.WithBufferSize(10))
 ```
 
 ## Options
 
-All options are defined in `options.go`:
-
-- `WithBufferSize(size int)` - Creates a channel with the specified buffer size
+- `WithBufferSize(size int)` - Creates a buffered channel
 - `WithCustomChannel(ch chan string)` - Uses an external channel (caller manages lifecycle)
-- `WithTimeout(duration time.Duration)` - Sets delivery timeout:
-  - `timeout > 0`: blocks up to duration, then drops
-  - `timeout < 0`: blocks indefinitely (guaranteed delivery)
-  - `timeout = 0` (default): best-effort, drops immediately if full
+- `WithTimeout(duration time.Duration)` - Sets delivery behavior:
+  - `timeout > 0`: blocks up to duration
+  - `timeout < 0`: blocks indefinitely
+  - `timeout = 0`: best-effort (default)
 
 ## Channel Lifecycle
 
 Channels are automatically cleaned up when the context is cancelled:
+- Manager-created channels are closed by the manager
+- External channels (`WithCustomChannel`) are NOT closed by the manager
 
-- **Manager-created channels** (default or `WithBufferSize`) are closed by the manager
-- **External channels** (`WithCustomChannel`) are NOT closed by the manager
+## Choosing a Delivery Mode
 
-```go
-ctx, cancel := context.WithCancel(context.Background())
-ch, _ := manager.GetStateChan(ctx)
-
-// Channel is closed when context is cancelled
-cancel()
-```
-
-## Performance Considerations
-
-- Best-effort mode (default) has no performance impact
-- Timeout and guaranteed delivery modes block broadcasts until delivery or timeout
-- Use larger buffers for high-throughput scenarios
-- Consider your delivery requirements carefully - guaranteed delivery can block indefinitely
+- **Best-effort**: Use for monitoring, metrics, or UI updates where occasional message loss is acceptable
+- **Timeout-based**: Use when you need delivery guarantees but can't risk blocking the FSM indefinitely
+- **Guaranteed delivery**: Use for auditing or when subscribers must receive every state change. Warning: slow subscribers will block all FSM state transitions.
