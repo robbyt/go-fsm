@@ -40,7 +40,6 @@ func WithLogger(logger *slog.Logger) Option {
 			return fmt.Errorf("logger cannot be nil")
 		}
 		m.logger = logger
-		m.logHandler = logger.Handler()
 		return nil
 	}
 }
@@ -51,7 +50,6 @@ func WithLogHandler(handler slog.Handler) Option {
 		if handler == nil {
 			return fmt.Errorf("log handler cannot be nil")
 		}
-		m.logHandler = handler
 		m.logger = slog.New(handler)
 		return nil
 	}

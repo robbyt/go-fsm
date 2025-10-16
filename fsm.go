@@ -58,7 +58,6 @@ type Machine struct {
 	mutex       sync.RWMutex
 	state       atomic.Value
 	transitions transitionDB
-	logHandler  slog.Handler
 	logger      *slog.Logger
 	callbacks   CallbackExecutor
 }
@@ -107,7 +106,6 @@ func New(
 
 	m := &Machine{
 		transitions: trans,
-		logHandler:  handler,
 		logger:      slog.New(handler),
 	}
 	m.state.Store(initialState)
