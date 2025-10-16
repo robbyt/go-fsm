@@ -17,36 +17,31 @@ import (
 func TestReadme_QuickStartExample(t *testing.T) {
 	t.Parallel()
 
-	// Create a logger
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := slog.Default()
 
 	// Create a new FSM with initial state and inline transitions
 	machine, err := NewSimple("new", map[string][]string{
 		"new":      {"booting", "error"},
 		"booting":  {"running", "error"},
-		"running":  {"stopping", "error"},
+		"running":  {"stopping", "stopped", "error"},
 		"stopping": {"stopped", "error"},
 		"stopped":  {"new", "error"},
 		"error":    {},
 	}, WithLogger(logger))
 	require.NoError(t, err)
 
-	// Perform state transitions - they must follow allowed transitions
-	// new -> booting -> running -> stopping -> stopped
-	err = machine.Transition("booting")
-	require.NoError(t, err)
-	assert.Equal(t, "booting", machine.GetState())
+	// Perform state transitions following the allowed transitions defined above
+	// new (initial state) -> booting -> running -> stopping -> stopped
+	states := []string{"booting", "running", "stopping", "stopped"}
+	for _, state := range states {
+		err := machine.Transition(state)
+		require.NoError(t, err)
+		assert.Equal(t, state, machine.GetState())
+	}
 
-	err = machine.Transition("running")
-	require.NoError(t, err)
-	assert.Equal(t, "running", machine.GetState())
-
-	err = machine.Transition("stopping")
-	require.NoError(t, err)
-	assert.Equal(t, "stopping", machine.GetState())
-
-	err = machine.Transition("stopped")
-	require.NoError(t, err)
+	// Invalid transition, state does not exist
+	err = machine.Transition("nope")
+	require.Error(t, err)
 	assert.Equal(t, "stopped", machine.GetState())
 }
 
@@ -54,36 +49,32 @@ func TestReadme_QuickStartExample(t *testing.T) {
 func TestReadme_CustomStatesAndTransitions(t *testing.T) {
 	t.Parallel()
 
-	t.Run("Simple approach with inline map", func(t *testing.T) {
-		// Simple approach with inline map
+	t.Run("Simple machine definition with an inline map", func(t *testing.T) {
 		machine, err := NewSimple("online", map[string][]string{
-			"online":  {"offline", "unknown"},
-			"offline": {"online", "unknown"},
-			"unknown": {},
+			"online":  {"offline", "error"},
+			"offline": {"online", "error"},
+			"error":   {},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, machine)
 		assert.Equal(t, "online", machine.GetState())
 
-		// Test basic transition
 		err = machine.Transition("offline")
 		require.NoError(t, err)
 		assert.Equal(t, "offline", machine.GetState())
 	})
 
-	t.Run("Advanced approach with reusable transition config", func(t *testing.T) {
-		// Advanced approach with reusable transition config
+	t.Run("Advanced transition definition by creating a transitions object", func(t *testing.T) {
 		customTransitions := transitions.MustNew(map[string][]string{
-			"online":  {"offline", "unknown"},
-			"offline": {"online", "unknown"},
-			"unknown": {},
+			"online":  {"offline", "error"},
+			"offline": {"online", "error"},
+			"error":   {},
 		})
 		machine, err := New("online", customTransitions)
 		require.NoError(t, err)
 		require.NotNil(t, machine)
 		assert.Equal(t, "online", machine.GetState())
 
-		// Test basic transition
 		err = machine.Transition("offline")
 		require.NoError(t, err)
 		assert.Equal(t, "offline", machine.GetState())
@@ -94,19 +85,7 @@ func TestReadme_CustomStatesAndTransitions(t *testing.T) {
 func TestReadme_FSMCreationExamples(t *testing.T) {
 	t.Parallel()
 
-	t.Run("Simple constructor with inline transitions", func(t *testing.T) {
-		// Simple constructor with inline transitions
-		machine, err := NewSimple("online", map[string][]string{
-			"online":  {"offline"},
-			"offline": {"online"},
-		})
-		require.NoError(t, err)
-		require.NotNil(t, machine)
-		assert.Equal(t, "online", machine.GetState())
-	})
-
 	t.Run("Advanced constructor with predefined transitions", func(t *testing.T) {
-		// Advanced constructor with predefined transitions
 		machine, err := New(transitions.StatusNew, transitions.Typical)
 		require.NoError(t, err)
 		require.NotNil(t, machine)
@@ -114,15 +93,13 @@ func TestReadme_FSMCreationExamples(t *testing.T) {
 	})
 
 	t.Run("With custom logger options", func(t *testing.T) {
-		// With custom logger options
 		handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
 		})
-		logger := slog.New(handler)
 		machine, err := NewSimple("online", map[string][]string{
 			"online":  {"offline"},
 			"offline": {"online"},
-		}, WithLogger(logger))
+		}, WithLogHandler(handler))
 		require.NoError(t, err)
 		require.NotNil(t, machine)
 		assert.Equal(t, "online", machine.GetState())
@@ -133,16 +110,10 @@ func TestReadme_FSMCreationExamples(t *testing.T) {
 func TestReadme_PreTransitionHooks(t *testing.T) {
 	t.Parallel()
 
-	const (
-		StatusOnline  = "StatusOnline"
-		StatusOffline = "StatusOffline"
-		StatusUnknown = "StatusUnknown"
-	)
-
 	customTransitions := transitions.MustNew(map[string][]string{
-		StatusOnline:  {StatusOffline, StatusUnknown},
-		StatusOffline: {StatusOnline, StatusUnknown},
-		StatusUnknown: {},
+		"online":  {"offline", "error"},
+		"offline": {"online", "error"},
+		"error":   {},
 	})
 
 	logger := slog.Default()
@@ -158,20 +129,20 @@ func TestReadme_PreTransitionHooks(t *testing.T) {
 		return nil
 	}
 
-	err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
+	err = registry.RegisterPreTransitionHook([]string{"offline"}, []string{"online"}, func(ctx context.Context, from, to string) error {
 		return establishConnection()
 	})
 	require.NoError(t, err)
 
-	machine, err := New(StatusOffline, customTransitions,
+	machine, err := New("offline", customTransitions,
 		WithLogger(logger),
 		WithCallbackRegistry(registry),
 	)
 	require.NoError(t, err)
 
-	err = machine.Transition(StatusOnline)
+	err = machine.Transition("online")
 	require.NoError(t, err)
-	assert.Equal(t, StatusOnline, machine.GetState())
+	assert.Equal(t, "online", machine.GetState())
 	assert.True(t, connectionEstablished)
 }
 
@@ -179,16 +150,10 @@ func TestReadme_PreTransitionHooks(t *testing.T) {
 func TestReadme_PostTransitionHooks(t *testing.T) {
 	t.Parallel()
 
-	const (
-		StatusOnline  = "StatusOnline"
-		StatusOffline = "StatusOffline"
-		StatusUnknown = "StatusUnknown"
-	)
-
 	customTransitions := transitions.MustNew(map[string][]string{
-		StatusOnline:  {StatusOffline, StatusUnknown},
-		StatusOffline: {StatusOnline, StatusUnknown},
-		StatusUnknown: {},
+		"online":  {"offline", "error"},
+		"offline": {"online", "error"},
+		"error":   {},
 	})
 
 	logger := slog.Default()
@@ -199,30 +164,26 @@ func TestReadme_PostTransitionHooks(t *testing.T) {
 	require.NoError(t, err)
 
 	var recordedTransitions []string
-	recordTransition := func(from, to string) {
-		recordedTransitions = append(recordedTransitions, from+"->"+to)
-	}
-
 	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-		recordTransition(from, to)
+		recordedTransitions = append(recordedTransitions, from+"->"+to)
 	})
 	require.NoError(t, err)
 
-	machine, err := New(StatusOffline, customTransitions,
+	machine, err := New("offline", customTransitions,
 		WithLogger(logger),
 		WithCallbackRegistry(registry),
 	)
 	require.NoError(t, err)
 
-	err = machine.Transition(StatusOnline)
+	err = machine.Transition("online")
 	require.NoError(t, err)
 
-	err = machine.Transition(StatusOffline)
+	err = machine.Transition("offline")
 	require.NoError(t, err)
 
 	expectedTransitions := []string{
-		StatusOffline + "->" + StatusOnline,
-		StatusOnline + "->" + StatusOffline,
+		"offline->online",
+		"online->offline",
 	}
 	assert.Equal(t, expectedTransitions, recordedTransitions)
 }
@@ -231,16 +192,10 @@ func TestReadme_PostTransitionHooks(t *testing.T) {
 func TestReadme_CombiningCallbacks(t *testing.T) {
 	t.Parallel()
 
-	const (
-		StatusOnline  = "StatusOnline"
-		StatusOffline = "StatusOffline"
-		StatusUnknown = "StatusUnknown"
-	)
-
 	customTransitions := transitions.MustNew(map[string][]string{
-		StatusOnline:  {StatusOffline, StatusUnknown},
-		StatusOffline: {StatusOnline, StatusUnknown},
-		StatusUnknown: {},
+		"online":  {"offline", "error"},
+		"offline": {"online", "error"},
+		"error":   {},
 	})
 
 	logger := slog.Default()
@@ -268,7 +223,7 @@ func TestReadme_CombiningCallbacks(t *testing.T) {
 		notifyCalled = true
 	}
 
-	err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
+	err = registry.RegisterPreTransitionHook([]string{"offline"}, []string{"online"}, func(ctx context.Context, from, to string) error {
 		if !isAuthorized() {
 			return errors.New("not authorized")
 		}
@@ -284,15 +239,15 @@ func TestReadme_CombiningCallbacks(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	machine, err := New(StatusOffline, customTransitions,
+	machine, err := New("offline", customTransitions,
 		WithLogger(logger),
 		WithCallbackRegistry(registry),
 	)
 	require.NoError(t, err)
 
-	err = machine.Transition(StatusOnline)
+	err = machine.Transition("online")
 	require.NoError(t, err)
-	assert.Equal(t, StatusOnline, machine.GetState())
+	assert.Equal(t, "online", machine.GetState())
 	assert.True(t, cleanupCalled)
 	assert.True(t, connectCalled)
 	assert.True(t, notifyCalled)
@@ -302,16 +257,10 @@ func TestReadme_CombiningCallbacks(t *testing.T) {
 func TestReadme_WildcardPatterns(t *testing.T) {
 	t.Parallel()
 
-	const (
-		StatusRunning = "StatusRunning"
-		StatusError   = "StatusError"
-		StatusStopped = "StatusStopped"
-	)
-
 	customTransitions := transitions.MustNew(map[string][]string{
-		StatusRunning: {StatusStopped, StatusError},
-		StatusStopped: {StatusRunning, StatusError},
-		StatusError:   {},
+		"running": {"stopped", "error"},
+		"stopped": {"running", "error"},
+		"error":   {},
 	})
 
 	logger := slog.Default()
@@ -325,13 +274,13 @@ func TestReadme_WildcardPatterns(t *testing.T) {
 	var postRunningTransitions []string
 	var allTransitions []string
 
-	err = registry.RegisterPreTransitionHook([]string{"*"}, []string{StatusError}, func(ctx context.Context, from, to string) error {
+	err = registry.RegisterPreTransitionHook([]string{"*"}, []string{"error"}, func(ctx context.Context, from, to string) error {
 		preErrorTransitions = append(preErrorTransitions, from)
 		return nil
 	})
 	require.NoError(t, err)
 
-	err = registry.RegisterPostTransitionHook([]string{StatusRunning}, []string{"*"}, func(ctx context.Context, from, to string) {
+	err = registry.RegisterPostTransitionHook([]string{"running"}, []string{"*"}, func(ctx context.Context, from, to string) {
 		postRunningTransitions = append(postRunningTransitions, to)
 	})
 	require.NoError(t, err)
@@ -341,70 +290,62 @@ func TestReadme_WildcardPatterns(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	machine, err := New(StatusRunning, customTransitions,
+	machine, err := New("running", customTransitions,
 		WithLogger(logger),
 		WithCallbackRegistry(registry),
 	)
 	require.NoError(t, err)
 
-	err = machine.Transition(StatusError)
+	err = machine.Transition("error")
 	require.NoError(t, err)
-	assert.Equal(t, []string{StatusRunning}, preErrorTransitions)
-	assert.Equal(t, []string{StatusError}, postRunningTransitions)
-	assert.Equal(t, []string{StatusRunning + "->" + StatusError}, allTransitions)
+	assert.Equal(t, []string{"running"}, preErrorTransitions)
+	assert.Equal(t, []string{"error"}, postRunningTransitions)
+	assert.Equal(t, []string{"running->error"}, allTransitions)
 }
 
 // TestReadme_StateTransitionOperations tests state transition examples from README.md
 func TestReadme_StateTransitionOperations(t *testing.T) {
 	t.Parallel()
 
-	const (
-		StatusOnline  = "StatusOnline"
-		StatusOffline = "StatusOffline"
-		StatusUnknown = "StatusUnknown"
-	)
-
 	customTransitions := transitions.MustNew(map[string][]string{
-		StatusOnline:  {StatusOffline, StatusUnknown},
-		StatusOffline: {StatusOnline, StatusUnknown},
-		StatusUnknown: {},
+		"online":  {"offline", "error"},
+		"offline": {"online", "error"},
+		"error":   {},
 	})
 
 	t.Run("Simple transition", func(t *testing.T) {
-		machine, err := New(StatusOnline, customTransitions)
+		machine, err := New("online", customTransitions)
 		require.NoError(t, err)
 
-		err = machine.Transition(StatusOffline)
+		err = machine.Transition("offline")
 		require.NoError(t, err)
-		assert.Equal(t, StatusOffline, machine.GetState())
+		assert.Equal(t, "offline", machine.GetState())
 	})
 
 	t.Run("Conditional transition", func(t *testing.T) {
-		machine, err := New(StatusOnline, customTransitions)
+		machine, err := New("online", customTransitions)
 		require.NoError(t, err)
 
-		// Correct current state
-		err = machine.TransitionIfCurrentState(StatusOnline, StatusOffline)
+		err = machine.TransitionIfCurrentState("online", "offline")
 		require.NoError(t, err)
-		assert.Equal(t, StatusOffline, machine.GetState())
+		assert.Equal(t, "offline", machine.GetState())
 
-		// Incorrect current state
-		err = machine.TransitionIfCurrentState(StatusOnline, StatusUnknown)
+		err = machine.TransitionIfCurrentState("online", "error")
 		require.ErrorIs(t, err, ErrCurrentStateIncorrect)
-		assert.Equal(t, StatusOffline, machine.GetState())
+		assert.Equal(t, "offline", machine.GetState())
 	})
 
 	t.Run("Get current state", func(t *testing.T) {
-		machine, err := New(StatusOnline, customTransitions)
+		machine, err := New("online", customTransitions)
 		require.NoError(t, err)
 
 		currentState := machine.GetState()
-		assert.Equal(t, StatusOnline, currentState)
+		assert.Equal(t, "online", currentState)
 
-		err = machine.Transition(StatusOffline)
+		err = machine.Transition("offline")
 		require.NoError(t, err)
 
 		currentState = machine.GetState()
-		assert.Equal(t, StatusOffline, currentState)
+		assert.Equal(t, "offline", currentState)
 	})
 }

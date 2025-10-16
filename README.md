@@ -5,7 +5,7 @@
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=robbyt_go-fsm&metric=coverage)](https://sonarcloud.io/summary/new_code?id=robbyt_go-fsm)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-A finite state machine for that supports custom states, and pre/post transition hooks.
+A finite state machine that supports custom states and allowed transitions with pre/post-transition hooks for validation or notification.
 
 ## Features
 
@@ -23,6 +23,8 @@ go get github.com/robbyt/go-fsm/v2
 
 ## Quick Start
 
+This example creates an FSM and transitions through states:
+
 ```go
 package main
 
@@ -34,44 +36,39 @@ import (
 )
 
 func main() {
-	// Create a logger
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := slog.Default()
 
 	// Create a new FSM with initial state and inline transitions
 	machine, err := fsm.NewSimple("new", map[string][]string{
 		"new":       {"booting", "error"},
 		"booting":   {"running", "error"},
-		"running":   {"stopping", "error"},
+		"running":   {"stopping", "stopped", "error"},
 		"stopping":  {"stopped", "error"},
 		"stopped":   {"new", "error"},
-		"error":     {},
+		"error":     {}, // terminal state, no transitions out
 	}, fsm.WithLogger(logger))
 	if err != nil {
 		logger.Error("failed to create FSM", "error", err)
 		return
 	}
 
-	// Perform state transitions - they must follow allowed transitions
-	// new -> booting -> running -> stopping -> stopped
-	if err := machine.Transition("booting"); err != nil {
-		logger.Error("transition failed", "error", err)
-		return
+	// Perform state transitions following the allowed transitions defined above
+	// new (initial state) -> booting -> running -> stopping -> stopped
+	states := []string{"booting", "running", "stopping", "stopped"}
+	for _, state := range states {
+		if err := machine.Transition(state); err != nil {
+			logger.Error("failed to transition", "to", state, "error", err)
+			_ := machine.SetState("error") // force to error state on failure
+			os.Exit(1)
+		}
+		fmt.Println("Current State:", machine.GetState())
 	}
 
-	if err := machine.Transition("running"); err != nil {
-		logger.Error("transition failed", "error", err)
-		return
+	err := machine.Transition("nope") // Invalid transition, state does not exist
+	if err != nil {
+		logger.Error("failed to transition", "to", "nope", "error", err)
 	}
-
-	if err := machine.Transition("stopping"); err != nil {
-		logger.Error("transition failed", "error", err)
-		return
-	}
-
-	if err := machine.Transition("stopped"); err != nil {
-		logger.Error("transition failed", "error", err)
-		return
-	}
+	fmt.Println("Final State:", machine.GetState())
 }
 ```
 
@@ -80,33 +77,41 @@ func main() {
 ### Defining Custom States and Transitions
 
 ```go
-// Simple approach with inline map
+// Simple machine definition with an inline map
 machine, err := fsm.NewSimple("online", map[string][]string{
-	"online":  {"offline", "unknown"},
-	"offline": {"online", "unknown"},
-	"unknown": {},
+	"online":  {"offline", "error"},
+	"offline": {"online", "error"},
+	"error": {},
 })
+```
 
-// Advanced approach with reusable transition config
+```go
+// Advanced transition definition by creating a transitions object
+import (
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/transitions"
+)
+
 customTransitions := transitions.MustNew(map[string][]string{
-	"online":  {"offline", "unknown"},
-	"offline": {"online", "unknown"},
-	"unknown": {},
+	"online":  {"offline", "error"},
+	"offline": {"online", "error"},
+	"error": {},
 })
 machine, err := fsm.New("online", customTransitions)
 ```
 
-### Creating an FSM
+### Creating an FSM using the "Typical" Transition Set
+
+The transitions package provides predefined transition sets. This example uses the Typical configuration and sets a custom logger.
 
 ```go
-// Simple constructor with inline transitions
-machine, err := fsm.NewSimple("online", map[string][]string{
-	"online":  {"offline"},
-	"offline": {"online"},
-})
-if err != nil {
-	// Handle error
-}
+import (
+	"log/slog"
+	"os"
+
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/transitions"
+)
 
 // Advanced constructor with predefined transitions
 machine, err := fsm.New(transitions.StatusNew, transitions.Typical)
@@ -118,16 +123,15 @@ if err != nil {
 handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 	Level: slog.LevelDebug,
 })
-logger := slog.New(handler)
 machine, err := fsm.NewSimple("online", map[string][]string{
 	"online":  {"offline"},
 	"offline": {"online"},
-}, fsm.WithLogger(logger))
+}, fsm.WithLogHandler(handler))
 ```
 
 ### State Transition Callbacks
 
-The FSM implements a callback hook system following the Run-to-Completion (RTC) model. Callbacks are configured on a callback registry before passing it to the FSM.
+Callbacks follow the Run-to-Completion (RTC) execution model. Configure callbacks on a registry before creating the FSM.
 
 To use callbacks, import the hooks package:
 
@@ -151,7 +155,7 @@ Pre-transition hooks can reject the transition by returning an error. Post-trans
 
 #### Pre-Transition Hooks
 
-Pre-transition hooks execute for specific state transitions and can prevent the transition if they fail.
+Pre-transition hooks can validate or reject transitions by returning an error.
 
 ```go
 logger := slog.Default()
@@ -178,7 +182,7 @@ machine, err := fsm.New("offline", customTransitions,
 
 #### Post-Transition Hooks
 
-Post-transition hooks execute after every state transition completes. They cannot abort the transition.
+Post-transition hooks execute after state changes complete and cannot reject transitions.
 
 ```go
 logger := slog.Default()
@@ -248,7 +252,7 @@ machine, err := fsm.New("offline", customTransitions,
 
 **Important**: Wildcard patterns require the registry to be created with `hooks.WithTransitions()` option so it knows which states exist.
 
-Hooks support wildcard patterns using `"*"` to match any state. This is useful for registering hooks that should execute for multiple state transitions without listing every combination explicitly.
+Use `"*"` to match any state in hook registrations.
 
 ```go
 // Register a hook for all transitions FROM any state TO "error"
