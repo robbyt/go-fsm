@@ -6,6 +6,9 @@ Provides state change notifications through channels when registered as a post-t
 
 ```go
 import (
+	"context"
+	"log/slog"
+
 	"github.com/robbyt/go-fsm/v2"
 	"github.com/robbyt/go-fsm/v2/hooks"
 	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
@@ -15,7 +18,7 @@ import (
 // Create broadcast manager
 manager := broadcast.NewManager(slog.Default().Handler())
 
-// Register as post-transition hook
+// Register as post-transition hook using the convenience method
 registry, _ := hooks.NewRegistry(
 	hooks.WithLogger(slog.Default()),
 	hooks.WithTransitions(transitions.Typical),

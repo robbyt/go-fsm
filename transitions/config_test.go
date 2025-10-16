@@ -333,6 +333,52 @@ func TestGetAllStates(t *testing.T) {
 	assert.ElementsMatch(t, []string{"StateA", "StateB", "StateC", "StateD"}, states)
 }
 
+func TestGetAllStates_ReturnsSorted(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns states in alphabetical order", func(t *testing.T) {
+		trans := MustNew(map[string][]string{
+			"Zebra":   {"Alpha"},
+			"Charlie": {"Delta"},
+			"Alpha":   {},
+			"Delta":   {},
+		})
+
+		states := trans.GetAllStates()
+		expected := []string{"Alpha", "Charlie", "Delta", "Zebra"}
+		assert.Equal(t, expected, states, "states should be sorted alphabetically")
+	})
+
+	t.Run("consistent ordering across multiple calls", func(t *testing.T) {
+		trans := MustNew(map[string][]string{
+			"StateC": {"StateA"},
+			"StateB": {"StateD"},
+			"StateA": {},
+			"StateD": {},
+		})
+
+		// Call multiple times and verify consistent ordering
+		first := trans.GetAllStates()
+		second := trans.GetAllStates()
+		third := trans.GetAllStates()
+
+		assert.Equal(t, first, second, "first and second call should return same order")
+		assert.Equal(t, second, third, "second and third call should return same order")
+		assert.Equal(t, []string{"StateA", "StateB", "StateC", "StateD"}, first)
+	})
+
+	t.Run("includes both source and destination states in sorted order", func(t *testing.T) {
+		trans := MustNew(map[string][]string{
+			"Middle": {"First", "Last"},
+			"First":  {},
+			"Last":   {},
+		})
+
+		states := trans.GetAllStates()
+		assert.Equal(t, []string{"First", "Last", "Middle"}, states)
+	})
+}
+
 func TestMarshalJSON(t *testing.T) {
 	t.Parallel()
 

@@ -44,9 +44,9 @@ func WithCustomChannel(ch chan string) Option {
 }
 
 // WithTimeout sets a timeout for broadcast delivery.
-// Positive duration: blocks up to the specified duration before dropping the message.
-// Negative duration: blocks indefinitely until delivered (guaranteed delivery).
-// Zero duration (default): best-effort, drops immediately if channel is full.
+// - timeout = 0 (default): best-effort, drops message if channel is full
+// - timeout > 0: blocks up to timeout duration, then drops
+// - timeout < 0: blocks indefinitely until delivered (guaranteed delivery)
 func WithTimeout(timeout time.Duration) Option {
 	return func(config *Config) {
 		config.timeout = timeout
