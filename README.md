@@ -38,14 +38,14 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	// Create a new FSM with initial state and inline transitions
-	machine, err := fsm.NewSimple(logger.Handler(), "new", map[string][]string{
+	machine, err := fsm.NewSimple("new", map[string][]string{
 		"new":       {"booting", "error"},
 		"booting":   {"running", "error"},
 		"running":   {"stopping", "error"},
 		"stopping":  {"stopped", "error"},
 		"stopped":   {"new", "error"},
 		"error":     {},
-	})
+	}, fsm.WithLogger(logger))
 	if err != nil {
 		logger.Error("failed to create FSM", "error", err)
 		return
@@ -81,7 +81,7 @@ func main() {
 
 ```go
 // Simple approach with inline map
-machine, err := fsm.NewSimple(slog.Default().Handler(), "online", map[string][]string{
+machine, err := fsm.NewSimple("online", map[string][]string{
 	"online":  {"offline", "unknown"},
 	"offline": {"online", "unknown"},
 	"unknown": {},
@@ -93,14 +93,14 @@ customTransitions := transitions.MustNew(map[string][]string{
 	"offline": {"online", "unknown"},
 	"unknown": {},
 })
-machine, err := fsm.New(slog.Default().Handler(), "online", customTransitions)
+machine, err := fsm.New("online", customTransitions)
 ```
 
 ### Creating an FSM
 
 ```go
 // Simple constructor with inline transitions
-machine, err := fsm.NewSimple(slog.Default().Handler(), "online", map[string][]string{
+machine, err := fsm.NewSimple("online", map[string][]string{
 	"online":  {"offline"},
 	"offline": {"online"},
 })
@@ -109,7 +109,7 @@ if err != nil {
 }
 
 // Advanced constructor with predefined transitions
-machine, err := fsm.New(slog.Default().Handler(), transitions.StatusNew, transitions.Typical)
+machine, err := fsm.New(transitions.StatusNew, transitions.Typical)
 if err != nil {
 	// Handle error
 }
@@ -118,10 +118,11 @@ if err != nil {
 handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 	Level: slog.LevelDebug,
 })
-machine, err := fsm.NewSimple(handler, "online", map[string][]string{
+logger := slog.New(handler)
+machine, err := fsm.NewSimple("online", map[string][]string{
 	"online":  {"offline"},
 	"offline": {"online"},
-})
+}, fsm.WithLogger(logger))
 ```
 
 ### State Transition Callbacks
@@ -153,12 +154,24 @@ Pre-transition hooks can reject the transition by returning an error. Post-trans
 Pre-transition hooks execute for specific state transitions and can prevent the transition if they fail.
 
 ```go
-registry := hooks.NewSynchronousCallbackRegistry(logger)
-registry.RegisterPreTransitionHook(StatusOffline, StatusOnline, func(ctx context.Context, from, to string) error {
+logger := slog.Default()
+registry, err := hooks.NewRegistry(
+	hooks.WithLogger(logger),
+	hooks.WithTransitions(customTransitions),
+)
+if err != nil {
+	// Handle error
+}
+
+err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
 	return establishConnection()
 })
+if err != nil {
+	// Handle error
+}
 
-machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
+machine, err := fsm.New(StatusOffline, customTransitions,
+	fsm.WithLogger(logger),
 	fsm.WithCallbackRegistry(registry),
 )
 ```
@@ -168,12 +181,24 @@ machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
 Post-transition hooks execute after every state transition completes. They cannot abort the transition.
 
 ```go
-registry := hooks.NewSynchronousCallbackRegistry(logger)
-registry.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+logger := slog.Default()
+registry, err := hooks.NewRegistry(
+	hooks.WithLogger(logger),
+	hooks.WithTransitions(customTransitions),
+)
+if err != nil {
+	// Handle error
+}
+
+err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 	metrics.RecordTransition(from, to)
 })
+if err != nil {
+	// Handle error
+}
 
-machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
+machine, err := fsm.New(StatusOffline, customTransitions,
+	fsm.WithLogger(logger),
 	fsm.WithCallbackRegistry(registry),
 )
 ```
@@ -182,10 +207,17 @@ machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
 #### Combining Multiple Callbacks
 
 ```go
-registry := hooks.NewSynchronousCallbackRegistry(logger)
+logger := slog.Default()
+registry, err := hooks.NewRegistry(
+	hooks.WithLogger(logger),
+	hooks.WithTransitions(customTransitions),
+)
+if err != nil {
+	// Handle error
+}
 
 // Pre-transition hook - validate and perform transition work
-registry.RegisterPreTransitionHook(StatusOffline, StatusOnline, func(ctx context.Context, from, to string) error {
+err = registry.RegisterPreTransitionHook([]string{StatusOffline}, []string{StatusOnline}, func(ctx context.Context, from, to string) error {
 	if !isAuthorized() {
 		return errors.New("not authorized")
 	}
@@ -194,16 +226,47 @@ registry.RegisterPreTransitionHook(StatusOffline, StatusOnline, func(ctx context
 	}
 	return connect()
 })
+if err != nil {
+	// Handle error
+}
 
 // Post-transition hook - global notification
-registry.RegisterPostTransitionHook(func(ctx context.Context, from, to string) {
+err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
 	notifyStateChange(from, to)
 })
+if err != nil {
+	// Handle error
+}
 
-machine, err := fsm.New(logger.Handler(), StatusOffline, customTransitions,
+machine, err := fsm.New(StatusOffline, customTransitions,
+	fsm.WithLogger(logger),
 	fsm.WithCallbackRegistry(registry),
 )
 ```
+
+#### Wildcard Pattern Matching
+
+Hooks support wildcard patterns using `"*"` to match any state. This is useful for registering hooks that should execute for multiple state transitions without listing every combination explicitly.
+
+```go
+// Register a hook for all transitions FROM any state TO "error"
+err = registry.RegisterPreTransitionHook([]string{"*"}, []string{"error"}, func(ctx context.Context, from, to string) error {
+	logger.Error("transitioning to error state", "from", from)
+	return nil
+})
+
+// Register a hook for all transitions FROM "running" TO any state
+err = registry.RegisterPostTransitionHook([]string{"running"}, []string{"*"}, func(ctx context.Context, from, to string) {
+	logger.Info("leaving running state", "to", to)
+})
+
+// Register a hook for ALL state transitions (any from, any to)
+err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
+	metrics.RecordTransition(from, to)
+})
+```
+
+**Important**: Wildcard patterns require the registry to be created with `hooks.WithTransitions()` option so it knows which states exist.
 
 #### Performance Considerations
 

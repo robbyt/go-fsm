@@ -122,7 +122,7 @@ func TestFSM_New_Validation(t *testing.T) {
 		fsm, err := New("initial", nil)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
-		require.ErrorIs(t, err, ErrAvailableStateData)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 	})
 
 	t.Run("Initial state not in transitions returns error", func(t *testing.T) {
@@ -133,7 +133,7 @@ func TestFSM_New_Validation(t *testing.T) {
 		fsm, err := New("invalid", mockDB)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
-		require.ErrorIs(t, err, ErrInvalidState)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 	})
 
 	t.Run("Valid initialization succeeds", func(t *testing.T) {
@@ -190,7 +190,7 @@ func TestFSM_SetState(t *testing.T) {
 		require.NoError(t, err)
 
 		err = fsm.SetState("invalid")
-		require.ErrorIs(t, err, ErrInvalidState)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 		assert.Equal(t, "state1", fsm.GetState()) // State should not change
 	})
 

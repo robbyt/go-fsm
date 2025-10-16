@@ -380,7 +380,7 @@ func TestNewSimpleIntegration(t *testing.T) {
 			"offline": {"online"},
 		})
 		require.Error(t, err)
-		require.ErrorIs(t, err, fsm.ErrInvalidState)
+		require.ErrorIs(t, err, fsm.ErrInvalidConfiguration)
 		assert.Nil(t, machine)
 	})
 }

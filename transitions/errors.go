@@ -22,14 +22,8 @@ var (
 	// ErrEmptyConfig is returned when a transitions configuration is empty or nil.
 	ErrEmptyConfig = errors.New("transitions config cannot be empty")
 
-	// ErrEmptyStateName is returned when a state name is an empty string.
-	ErrEmptyStateName = errors.New("state name cannot be empty")
-
-	// ErrWhitespaceStateName is returned when a state name contains only whitespace.
-	ErrWhitespaceStateName = errors.New("state name cannot be whitespace-only")
-
-	// ErrInvalidWhitespace is returned when a state name has leading or trailing whitespace.
-	ErrInvalidWhitespace = errors.New("state name cannot have leading or trailing whitespace")
+	// ErrInvalidStateName is returned when a state name is invalid.
+	ErrInvalidStateName = errors.New("invalid state name")
 
 	// ErrUndefinedDestinations is returned when destination states are not defined as source states in the config.
 	ErrUndefinedDestinations = errors.New("destination states not defined in config")

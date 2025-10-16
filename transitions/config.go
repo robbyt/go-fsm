@@ -81,16 +81,19 @@ func buildIndex(config map[string][]string) (map[string]map[string]struct{}, err
 }
 
 // validateStateName checks if a state name is valid.
-// Returns an error if the state name is empty or contains only whitespace.
+// Returns an error if the state name is empty, contains only whitespace, or uses reserved keywords.
 func validateStateName(state string) error {
 	if state == "" {
-		return ErrEmptyStateName
+		return fmt.Errorf("%w: cannot be empty", ErrInvalidStateName)
 	}
 	if strings.TrimSpace(state) == "" {
-		return fmt.Errorf("%w: %q", ErrWhitespaceStateName, state)
+		return fmt.Errorf("%w: cannot be whitespace-only: %q", ErrInvalidStateName, state)
 	}
 	if strings.TrimSpace(state) != state {
-		return fmt.Errorf("%w: %q", ErrInvalidWhitespace, state)
+		return fmt.Errorf("%w: cannot have leading or trailing whitespace: %q", ErrInvalidStateName, state)
+	}
+	if state == "*" {
+		return fmt.Errorf("%w: '*' is reserved for wildcard pattern matching", ErrInvalidStateName)
 	}
 	return nil
 }

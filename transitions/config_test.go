@@ -78,7 +78,7 @@ func TestNew(t *testing.T) {
 			"": {"StateA"},
 		}
 		trans, err := New(config)
-		require.ErrorIs(t, err, ErrEmptyStateName)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 		assert.Nil(t, trans)
 	})
 
@@ -87,7 +87,7 @@ func TestNew(t *testing.T) {
 			"StateA": {""},
 		}
 		trans, err := New(config)
-		require.ErrorIs(t, err, ErrEmptyStateName)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 		assert.Nil(t, trans)
 	})
 
@@ -96,7 +96,7 @@ func TestNew(t *testing.T) {
 			"   ": {"StateA"},
 		}
 		trans, err := New(config)
-		require.ErrorIs(t, err, ErrWhitespaceStateName)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 		assert.Nil(t, trans)
 	})
 
@@ -105,7 +105,7 @@ func TestNew(t *testing.T) {
 			"StateA": {"  \t  "},
 		}
 		trans, err := New(config)
-		require.ErrorIs(t, err, ErrWhitespaceStateName)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 		assert.Nil(t, trans)
 	})
 
@@ -115,7 +115,7 @@ func TestNew(t *testing.T) {
 			"StateB":  {},
 		}
 		trans, err := New(config)
-		require.ErrorIs(t, err, ErrInvalidWhitespace)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 		assert.Nil(t, trans)
 	})
 
@@ -125,7 +125,7 @@ func TestNew(t *testing.T) {
 			"StateB":  {},
 		}
 		trans, err := New(config)
-		require.ErrorIs(t, err, ErrInvalidWhitespace)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 		assert.Nil(t, trans)
 	})
 
@@ -134,7 +134,34 @@ func TestNew(t *testing.T) {
 			"StateA": {" StateB"},
 		}
 		trans, err := New(config)
-		require.ErrorIs(t, err, ErrInvalidWhitespace)
+		require.ErrorIs(t, err, ErrInvalidStateName)
+		assert.Nil(t, trans)
+	})
+
+	t.Run("returns error for reserved state name '*' as source", func(t *testing.T) {
+		config := map[string][]string{
+			"*": {"StateA"},
+		}
+		trans, err := New(config)
+		require.ErrorIs(t, err, ErrInvalidStateName)
+		assert.Nil(t, trans)
+	})
+
+	t.Run("returns error for reserved state name '*' as destination", func(t *testing.T) {
+		config := map[string][]string{
+			"StateA": {"*"},
+		}
+		trans, err := New(config)
+		require.ErrorIs(t, err, ErrInvalidStateName)
+		assert.Nil(t, trans)
+	})
+
+	t.Run("returns error for reserved state name '*' as both source and destination", func(t *testing.T) {
+		config := map[string][]string{
+			"*": {"*"},
+		}
+		trans, err := New(config)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 		assert.Nil(t, trans)
 	})
 
@@ -160,8 +187,7 @@ func TestNew(t *testing.T) {
 		assert.Nil(t, trans)
 
 		// Should contain all error types
-		require.ErrorIs(t, err, ErrEmptyStateName)
-		require.ErrorIs(t, err, ErrInvalidWhitespace)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 		require.ErrorIs(t, err, ErrUndefinedDestinations)
 	})
 }
@@ -208,6 +234,14 @@ func TestMustNew(t *testing.T) {
 		assert.Panics(t, func() {
 			MustNew(map[string][]string{
 				"StateA ": {"StateB"},
+			})
+		})
+	})
+
+	t.Run("panics with reserved state name '*'", func(t *testing.T) {
+		assert.Panics(t, func() {
+			MustNew(map[string][]string{
+				"*": {"StateA"},
 			})
 		})
 	})
@@ -445,7 +479,7 @@ func TestUnmarshalJSON(t *testing.T) {
 
 		var trans Config
 		err := json.Unmarshal(invalidJSON, &trans)
-		require.ErrorIs(t, err, ErrEmptyStateName)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 	})
 
 	t.Run("returns error for whitespace state name in JSON", func(t *testing.T) {
@@ -455,7 +489,7 @@ func TestUnmarshalJSON(t *testing.T) {
 
 		var trans Config
 		err := json.Unmarshal(invalidJSON, &trans)
-		require.ErrorIs(t, err, ErrInvalidWhitespace)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 	})
 
 	t.Run("returns error for destination with whitespace in JSON", func(t *testing.T) {
@@ -465,7 +499,27 @@ func TestUnmarshalJSON(t *testing.T) {
 
 		var trans Config
 		err := json.Unmarshal(invalidJSON, &trans)
-		require.ErrorIs(t, err, ErrInvalidWhitespace)
+		require.ErrorIs(t, err, ErrInvalidStateName)
+	})
+
+	t.Run("returns error for reserved state name '*' as source in JSON", func(t *testing.T) {
+		invalidJSON := []byte(`{
+			"*": ["StateA"]
+		}`)
+
+		var trans Config
+		err := json.Unmarshal(invalidJSON, &trans)
+		require.ErrorIs(t, err, ErrInvalidStateName)
+	})
+
+	t.Run("returns error for reserved state name '*' as destination in JSON", func(t *testing.T) {
+		invalidJSON := []byte(`{
+			"StateA": ["*"]
+		}`)
+
+		var trans Config
+		err := json.Unmarshal(invalidJSON, &trans)
+		require.ErrorIs(t, err, ErrInvalidStateName)
 	})
 }
 

@@ -94,13 +94,13 @@ func New(
 		WithGroup("fsm")
 
 	if trans == nil {
-		return nil, fmt.Errorf("%w: transitions is nil", ErrAvailableStateData)
+		return nil, fmt.Errorf("%w: transitions is nil", ErrInvalidConfiguration)
 	}
 
 	if !trans.HasState(initialState) {
 		return nil, fmt.Errorf(
-			"%w: initial state '%s' is not defined in allowedTransitions",
-			ErrInvalidState,
+			"%w: initial state '%s' is not defined in transitions",
+			ErrInvalidConfiguration,
 			initialState,
 		)
 	}
@@ -192,8 +192,8 @@ func (fsm *Machine) SetStateWithContext(ctx context.Context, state string) error
 
 	if !fsm.transitions.HasState(state) {
 		return fmt.Errorf(
-			"%w: state '%s' is not defined as a source state in transitions",
-			ErrInvalidState,
+			"%w: state '%s' is not defined in transitions",
+			ErrInvalidConfiguration,
 			state,
 		)
 	}
