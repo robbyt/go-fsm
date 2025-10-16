@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -131,6 +132,35 @@ func TestClear(t *testing.T) {
 	})
 }
 
+func TestOptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("WithLogger rejects nil logger", func(t *testing.T) {
+		_, err := NewRegistry(WithLogger(nil))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "logger cannot be nil")
+	})
+
+	t.Run("WithLogHandler rejects nil handler", func(t *testing.T) {
+		_, err := NewRegistry(WithLogHandler(nil))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "log handler cannot be nil")
+	})
+
+	t.Run("WithLogHandler creates logger", func(t *testing.T) {
+		handler := slog.Default().Handler()
+		reg, err := NewRegistry(WithLogHandler(handler))
+		require.NoError(t, err)
+		assert.NotNil(t, reg.logger)
+	})
+
+	t.Run("WithTransitions rejects nil transitions", func(t *testing.T) {
+		_, err := NewRegistry(WithTransitions(nil))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "transitions cannot be nil")
+	})
+}
+
 func TestPatternExpansion(t *testing.T) {
 	t.Parallel()
 
@@ -225,5 +255,186 @@ func TestPatternExpansion(t *testing.T) {
 		)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "wildcard '*' cannot be used without state table")
+	})
+
+	t.Run("Wildcard in to position without state table returns error", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPreTransitionHook(
+			[]string{"StatusNew"},
+			[]string{"*"},
+			func(ctx context.Context, from, to string) error {
+				return nil
+			},
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "wildcard '*' cannot be used without state table")
+	})
+
+	t.Run("Invalid to state returns error", func(t *testing.T) {
+		reg, err := NewRegistry(
+			WithLogger(slog.Default()),
+			WithTransitions(trans),
+		)
+		require.NoError(t, err)
+
+		err = reg.RegisterPreTransitionHook(
+			[]string{"StatusNew"},
+			[]string{"InvalidState"},
+			func(ctx context.Context, from, to string) error {
+				return nil
+			},
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown state 'InvalidState'")
+	})
+
+	t.Run("Wildcard to wildcard creates Cartesian product", func(t *testing.T) {
+		executed := make(map[string]int)
+		reg, err := NewRegistry(
+			WithLogger(slog.Default()),
+			WithTransitions(trans),
+		)
+		require.NoError(t, err)
+
+		err = reg.RegisterPreTransitionHook(
+			[]string{"*"},
+			[]string{"*"},
+			func(ctx context.Context, from, to string) error {
+				key := fmt.Sprintf("%s->%s", from, to)
+				executed[key]++
+				return nil
+			},
+		)
+		require.NoError(t, err)
+
+		// Execute one transition to verify hook is registered
+		err = reg.ExecutePreTransitionHooks("StatusNew", "StatusBooting")
+		require.NoError(t, err)
+		assert.Equal(t, 1, executed["StatusNew->StatusBooting"])
+	})
+}
+
+func TestRegisterHookValidation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("RegisterPreTransitionHook rejects empty from list", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPreTransitionHook(
+			[]string{},
+			[]string{"StatusError"},
+			func(ctx context.Context, from, to string) error {
+				return nil
+			},
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "from and to state lists cannot be empty")
+	})
+
+	t.Run("RegisterPreTransitionHook rejects empty to list", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPreTransitionHook(
+			[]string{"StatusNew"},
+			[]string{},
+			func(ctx context.Context, from, to string) error {
+				return nil
+			},
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "from and to state lists cannot be empty")
+	})
+
+	t.Run("RegisterPostTransitionHook rejects empty from list", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPostTransitionHook(
+			[]string{},
+			[]string{"StatusError"},
+			func(ctx context.Context, from, to string) {
+			},
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "from and to state lists cannot be empty")
+	})
+
+	t.Run("RegisterPostTransitionHook rejects empty to list", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPostTransitionHook(
+			[]string{"StatusNew"},
+			[]string{},
+			func(ctx context.Context, from, to string) {
+			},
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "from and to state lists cannot be empty")
+	})
+
+	t.Run("RegisterPostTransitionHook rejects wildcard without state table", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPostTransitionHook(
+			[]string{"*"},
+			[]string{"StatusError"},
+			func(ctx context.Context, from, to string) {
+			},
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "wildcard '*' cannot be used without state table")
+	})
+
+	t.Run("RegisterPostTransitionHook with valid state succeeds", func(t *testing.T) {
+		trans := transitions.MustNew(map[string][]string{
+			"StatusNew":     {"StatusBooting"},
+			"StatusBooting": {},
+		})
+		reg, err := NewRegistry(
+			WithLogger(slog.Default()),
+			WithTransitions(trans),
+		)
+		require.NoError(t, err)
+
+		err = reg.RegisterPostTransitionHook(
+			[]string{"StatusNew"},
+			[]string{"StatusBooting"},
+			func(ctx context.Context, from, to string) {
+			},
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("RegisterPreTransitionHook without transitions allows any state", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPreTransitionHook(
+			[]string{"AnyFromState"},
+			[]string{"AnyToState"},
+			func(ctx context.Context, from, to string) error {
+				return nil
+			},
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("RegisterPostTransitionHook without transitions allows any state", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPostTransitionHook(
+			[]string{"AnyFromState"},
+			[]string{"AnyToState"},
+			func(ctx context.Context, from, to string) {
+			},
+		)
+		require.NoError(t, err)
 	})
 }
