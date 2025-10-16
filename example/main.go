@@ -44,9 +44,9 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 
 	// Create FSM with typical transitions
 	machine, err := fsm.New(
-		logger.Handler(),
 		transitions.StatusNew,
 		transitions.Typical,
+		fsm.WithLogger(logger),
 		fsm.WithCallbackRegistry(registry),
 	)
 	if err != nil {

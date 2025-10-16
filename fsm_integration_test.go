@@ -36,7 +36,7 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)
@@ -72,7 +72,7 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestPostTransitionHookIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestBroadcastMechanismIntegration(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)
@@ -181,7 +181,7 @@ func TestPanicRecoveryIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)

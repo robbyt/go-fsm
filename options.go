@@ -16,6 +16,11 @@ limitations under the License.
 
 package fsm
 
+import (
+	"fmt"
+	"log/slog"
+)
+
 // Option is a functional option for configuring a Machine during construction.
 type Option func(*Machine) error
 
@@ -24,6 +29,30 @@ type Option func(*Machine) error
 func WithCallbackRegistry(executor CallbackExecutor) Option {
 	return func(m *Machine) error {
 		m.callbacks = executor
+		return nil
+	}
+}
+
+// WithLogger sets the logger for the FSM.
+func WithLogger(logger *slog.Logger) Option {
+	return func(m *Machine) error {
+		if logger == nil {
+			return fmt.Errorf("logger cannot be nil")
+		}
+		m.logger = logger
+		m.logHandler = logger.Handler()
+		return nil
+	}
+}
+
+// WithLogHandler creates a new slog instance for the FSM using your slog.Handler implementation.
+func WithLogHandler(handler slog.Handler) Option {
+	return func(m *Machine) error {
+		if handler == nil {
+			return fmt.Errorf("log handler cannot be nil")
+		}
+		m.logHandler = handler
+		m.logger = slog.New(handler)
 		return nil
 	}
 }

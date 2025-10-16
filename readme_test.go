@@ -38,7 +38,8 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a new FSM with initial state and predefined transitions
-	machine, err := New(logger.Handler(), transitions.StatusNew, transitions.Typical,
+	machine, err := New(transitions.StatusNew, transitions.Typical,
+		WithLogger(logger),
 		WithCallbackRegistry(registry),
 	)
 	require.NoError(t, err)
@@ -106,14 +107,14 @@ func TestReadme_CustomStatesAndTransitions(t *testing.T) {
 	})
 
 	t.Run("Create FSM with custom transitions", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
+		machine, err := New(StatusOnline, customTransitions)
 		require.NoError(t, err)
 		require.NotNil(t, machine)
 		assert.Equal(t, StatusOnline, machine.GetState())
 	})
 
 	t.Run("Test allowed transitions", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
+		machine, err := New(StatusOnline, customTransitions)
 		require.NoError(t, err)
 
 		// Online -> Offline (allowed)
@@ -133,7 +134,7 @@ func TestReadme_CustomStatesAndTransitions(t *testing.T) {
 	})
 
 	t.Run("Test disallowed transitions from Unknown", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusUnknown, customTransitions)
+		machine, err := New(StatusUnknown, customTransitions)
 		require.NoError(t, err)
 
 		// Unknown -> Online (not allowed)
@@ -165,7 +166,7 @@ func TestReadme_FSMCreationExamples(t *testing.T) {
 	})
 
 	t.Run("Create with default options", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
+		machine, err := New(StatusOnline, customTransitions)
 		require.NoError(t, err)
 		require.NotNil(t, machine)
 		assert.Equal(t, StatusOnline, machine.GetState())
@@ -175,7 +176,7 @@ func TestReadme_FSMCreationExamples(t *testing.T) {
 		handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
 		})
-		machine, err := New(handler, StatusOnline, customTransitions)
+		machine, err := New(StatusOnline, customTransitions, WithLogHandler(handler))
 		require.NoError(t, err)
 		require.NotNil(t, machine)
 		assert.Equal(t, StatusOnline, machine.GetState())
@@ -199,7 +200,7 @@ func TestReadme_StateTransitionOperations(t *testing.T) {
 	})
 
 	t.Run("Simple transition", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
+		machine, err := New(StatusOnline, customTransitions)
 		require.NoError(t, err)
 
 		err = machine.Transition(StatusOffline)
@@ -208,7 +209,7 @@ func TestReadme_StateTransitionOperations(t *testing.T) {
 	})
 
 	t.Run("Conditional transition", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
+		machine, err := New(StatusOnline, customTransitions)
 		require.NoError(t, err)
 
 		// Correct current state
@@ -223,7 +224,7 @@ func TestReadme_StateTransitionOperations(t *testing.T) {
 	})
 
 	t.Run("Get current state", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), StatusOnline, customTransitions)
+		machine, err := New(StatusOnline, customTransitions)
 		require.NoError(t, err)
 
 		currentState := machine.GetState()
@@ -255,7 +256,7 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 		require.NoError(t, err)
 
-		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.Typical,
+		machine, err := New(transitions.StatusNew, transitions.Typical,
 			WithCallbackRegistry(registry),
 		)
 		require.NoError(t, err)
@@ -330,7 +331,7 @@ func TestReadme_BroadcastModes(t *testing.T) {
 			err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 			require.NoError(t, err)
 
-			machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.Typical,
+			machine, err := New(transitions.StatusNew, transitions.Typical,
 				WithCallbackRegistry(registry),
 			)
 			require.NoError(t, err)

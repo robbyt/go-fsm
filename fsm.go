@@ -20,20 +20,18 @@ limitations under the License.
 //
 // Example usage:
 //
-//	logger := slog.Default()
-//	machine, err := fsm.NewSimple(logger.Handler(), "new", map[string][]string{
+//	machine, err := fsm.NewSimple("new", map[string][]string{
 //	    "new":     {"running"},
 //	    "running": {"stopped"},
 //	    "stopped": {},
 //	})
 //	if err != nil {
-//	    logger.Error("Failed to create FSM", "error", err)
-//	    return
+//	    return err
 //	}
 //
 //	err = machine.Transition("running")
 //	if err != nil {
-//	    logger.Error("Transition failed", "error", err)
+//	    return err
 //	}
 package fsm
 
@@ -90,23 +88,20 @@ type persistentState struct {
 //	    transitions.StatusBooting: {transitions.StatusRunning, transitions.StatusError},
 //	    transitions.StatusRunning: {transitions.StatusReloading, transitions.StatusStopping, transitions.StatusError},
 //	})
-//	machine, err := fsm.New(handler, transitions.StatusNew, trans)
+//	machine, err := fsm.New(transitions.StatusNew, trans)
 //
 // Or use the provided transitions.Typical:
 //
-//	machine, err := fsm.New(handler, transitions.StatusNew, transitions.Typical)
+//	machine, err := fsm.New(transitions.StatusNew, transitions.Typical)
 func New(
-	handler slog.Handler,
 	initialState string,
 	trans transitionDB,
 	opts ...Option,
 ) (*Machine, error) {
-	// Ensure a valid logger handler is provided or use a default.
-	if handler == nil {
-		handler = slog.Default().
-			Handler().
-			WithGroup("fsm")
-	}
+	// Use default logger
+	handler := slog.Default().
+		Handler().
+		WithGroup("fsm")
 
 	// Validate that transitions are defined.
 	if trans == nil {
@@ -145,13 +140,12 @@ func New(
 //
 // Example usage:
 //
-//	machine, err := fsm.NewSimple(handler, "online", map[string][]string{
+//	machine, err := fsm.NewSimple("online", map[string][]string{
 //	    "online":  {"offline", "error"},
 //	    "offline": {"online", "error"},
 //	    "error":   {},
 //	})
 func NewSimple(
-	handler slog.Handler,
 	initialState string,
 	allowedTransitions map[string][]string,
 	opts ...Option,
@@ -160,7 +154,7 @@ func NewSimple(
 	if err != nil {
 		return nil, err
 	}
-	return New(handler, initialState, trans, opts...)
+	return New(initialState, trans, opts...)
 }
 
 // MarshalJSON implements the json.Marshaler interface.

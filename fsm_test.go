@@ -15,21 +15,21 @@ func TestFSM(t *testing.T) {
 	t.Parallel()
 
 	t.Run("NewFSM with invalid initial status", func(t *testing.T) {
-		fsm, err := New(nil, "bla", transitions.Typical)
+		fsm, err := New("bla", transitions.Typical)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrInvalidState) // More specific check
 	})
 
 	t.Run("NewFSM with nil allowedTransitions", func(t *testing.T) {
-		fsm, err := New(nil, transitions.StatusNew, nil)
+		fsm, err := New(transitions.StatusNew, nil)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrAvailableStateData) // More specific check
 	})
 
 	t.Run("GetState and SetState", func(t *testing.T) {
-		fsm, err := New(nil, transitions.StatusNew, transitions.Typical)
+		fsm, err := New(transitions.StatusNew, transitions.Typical)
 		require.NoError(t, err)
 
 		assert.Equal(t, transitions.StatusNew, fsm.GetState())
@@ -77,7 +77,7 @@ func TestFSM(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				fsm, err := New(nil, tc.initialState, transitions.Typical)
+				fsm, err := New(tc.initialState, transitions.Typical)
 				require.NoError(t, err)
 
 				err = fsm.Transition(tc.toState)
@@ -130,7 +130,7 @@ func TestFSM(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				fsm, err := New(nil, tc.initialState, transitions.Typical)
+				fsm, err := New(tc.initialState, transitions.Typical)
 				require.NoError(t, err)
 
 				err = fsm.TransitionIfCurrentState(tc.fromState, tc.toState)
@@ -150,7 +150,7 @@ func TestFSM(t *testing.T) {
 func TestFSM_Transition_DisallowedStateChange(t *testing.T) {
 	t.Parallel()
 
-	fsm, err := New(nil, transitions.StatusNew, transitions.Typical)
+	fsm, err := New(transitions.StatusNew, transitions.Typical)
 	require.NoError(t, err)
 
 	// Attempt transition to a state not allowed from transitions.StatusNew
@@ -168,7 +168,7 @@ func TestFSM_NoAllowedTransitions(t *testing.T) {
 		transitions.StatusNew:   {transitions.StatusError},
 		transitions.StatusError: {}, // transitions.StatusError has no outgoing transitions
 	})
-	fsm, err := New(nil, transitions.StatusNew, smallestTransitions)
+	fsm, err := New(transitions.StatusNew, smallestTransitions)
 	require.NoError(t, err)
 
 	// Verify initial state
@@ -211,7 +211,7 @@ func TestFSM_RaceCondition_StateTransitions(t *testing.T) {
 	})
 
 	// Create the FSM starting at "StateA"
-	fsmMachine, err := New(nil, StateA, trans)
+	fsmMachine, err := New(StateA, trans)
 	require.NoError(t, err)
 
 	// Verify initial state
@@ -273,7 +273,7 @@ func TestFSM_TransitionBool(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fsm, err := New(nil, tc.initialState, transitions.Typical)
+			fsm, err := New(tc.initialState, transitions.Typical)
 			require.NoError(t, err)
 
 			result := fsm.TransitionBool(tc.toState)
@@ -293,7 +293,7 @@ func TestFSM_JSONPersistence(t *testing.T) {
 
 	t.Run("MarshalJSON", func(t *testing.T) {
 		initialState := transitions.StatusRunning
-		fsm, err := New(testHandler, initialState, transitions.Typical)
+		fsm, err := New(initialState, transitions.Typical, WithLogHandler(testHandler))
 		require.NoError(t, err)
 
 		// Perform a transition to ensure state changes are captured
@@ -314,7 +314,7 @@ func TestFSM_GetAllStates(t *testing.T) {
 	t.Parallel()
 
 	t.Run("GetAllStates with transitions.TypicalTransitions", func(t *testing.T) {
-		fsm, err := New(nil, transitions.StatusNew, transitions.Typical)
+		fsm, err := New(transitions.StatusNew, transitions.Typical)
 		require.NoError(t, err)
 
 		states := fsm.GetAllStates()
@@ -335,7 +335,7 @@ func TestFSM_GetAllStates(t *testing.T) {
 			"StateC": {"StateA"},
 		})
 
-		fsm, err := New(nil, "StateA", customTransitions)
+		fsm, err := New("StateA", customTransitions)
 		require.NoError(t, err)
 
 		states := fsm.GetAllStates()
@@ -350,7 +350,7 @@ func TestFSM_GetAllStates(t *testing.T) {
 			"OnlyState": {},
 		})
 
-		fsm, err := New(nil, "OnlyState", singleStateTransitions)
+		fsm, err := New("OnlyState", singleStateTransitions)
 		require.NoError(t, err)
 
 		states := fsm.GetAllStates()
@@ -361,7 +361,7 @@ func TestFSM_GetAllStates(t *testing.T) {
 	})
 
 	t.Run("GetAllStates returns copy not reference", func(t *testing.T) {
-		fsm, err := New(nil, transitions.StatusNew, transitions.Typical)
+		fsm, err := New(transitions.StatusNew, transitions.Typical)
 		require.NoError(t, err)
 
 		states1 := fsm.GetAllStates()
@@ -379,7 +379,7 @@ func TestNewSimple(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Success with valid map", func(t *testing.T) {
-		fsm, err := NewSimple(nil, "online", map[string][]string{
+		fsm, err := NewSimple("online", map[string][]string{
 			"online":  {"offline", "error"},
 			"offline": {"online", "error"},
 			"error":   {},
@@ -390,7 +390,7 @@ func TestNewSimple(t *testing.T) {
 	})
 
 	t.Run("Success with transitions", func(t *testing.T) {
-		fsm, err := NewSimple(nil, "online", map[string][]string{
+		fsm, err := NewSimple("online", map[string][]string{
 			"online":  {"offline"},
 			"offline": {"online"},
 		})
@@ -406,7 +406,7 @@ func TestNewSimple(t *testing.T) {
 	})
 
 	t.Run("Error with invalid transitions map", func(t *testing.T) {
-		fsm, err := NewSimple(nil, "online", map[string][]string{
+		fsm, err := NewSimple("online", map[string][]string{
 			"online": {"offline"},
 			// "offline" is referenced but not defined as a source state
 		})
@@ -415,13 +415,13 @@ func TestNewSimple(t *testing.T) {
 	})
 
 	t.Run("Error with empty transitions map", func(t *testing.T) {
-		fsm, err := NewSimple(nil, "online", map[string][]string{})
+		fsm, err := NewSimple("online", map[string][]string{})
 		require.Error(t, err)
 		assert.Nil(t, fsm)
 	})
 
 	t.Run("Error with invalid initial state", func(t *testing.T) {
-		fsm, err := NewSimple(nil, "invalid", map[string][]string{
+		fsm, err := NewSimple("invalid", map[string][]string{
 			"online":  {"offline"},
 			"offline": {"online"},
 		})
