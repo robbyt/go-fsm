@@ -16,6 +16,8 @@ limitations under the License.
 
 package fsm
 
+import "context"
+
 // CallbackExecutor defines the interface for executing state transition callbacks.
 // Implementations handle iteration, panic recovery, and error wrapping internally.
 // The interface is defined where it's consumed (fsm package) following Go best practices.
@@ -23,9 +25,11 @@ package fsm
 type CallbackExecutor interface {
 	// ExecutePreTransitionHooks runs all registered pre-transition hooks.
 	// Returns an error if any hook fails.
-	ExecutePreTransitionHooks(from, to string) error
+	// The context is passed to all hooks, allowing access to request-scoped values.
+	ExecutePreTransitionHooks(ctx context.Context, from, to string) error
 
 	// ExecutePostTransitionHooks runs all registered post-transition hooks.
 	// Panics are recovered and logged but do not propagate.
-	ExecutePostTransitionHooks(from, to string)
+	// The context is passed to all hooks, allowing access to request-scoped values.
+	ExecutePostTransitionHooks(ctx context.Context, from, to string)
 }

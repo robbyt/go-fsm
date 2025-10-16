@@ -25,7 +25,7 @@ func TestExecutePreTransitionHooks(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = reg.ExecutePreTransitionHooks("New", "Booting")
+		err = reg.ExecutePreTransitionHooks(context.Background(), "New", "Booting")
 		require.NoError(t, err)
 		assert.True(t, called)
 	})
@@ -38,7 +38,7 @@ func TestExecutePreTransitionHooks(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = reg.ExecutePreTransitionHooks("New", "Booting")
+		err = reg.ExecutePreTransitionHooks(context.Background(), "New", "Booting")
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrCallbackFailed)
 	})
@@ -56,7 +56,7 @@ func TestExecutePostTransitionHooks(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		reg.ExecutePostTransitionHooks("New", "Booting")
+		reg.ExecutePostTransitionHooks(context.Background(), "New", "Booting")
 		assert.True(t, called)
 	})
 
@@ -73,7 +73,7 @@ func TestExecutePostTransitionHooks(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		reg.ExecutePostTransitionHooks("New", "Booting")
+		reg.ExecutePostTransitionHooks(context.Background(), "New", "Booting")
 		assert.Equal(t, []int{1, 2}, order)
 	})
 }
@@ -89,7 +89,7 @@ func TestPanicRecovery(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = reg.ExecutePreTransitionHooks("New", "Booting")
+		err = reg.ExecutePreTransitionHooks(context.Background(), "New", "Booting")
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrCallbackFailed)
 		assert.Contains(t, err.Error(), "callback panicked")
@@ -104,7 +104,7 @@ func TestPanicRecovery(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should not panic
-		reg.ExecutePostTransitionHooks("New", "Booting")
+		reg.ExecutePostTransitionHooks(context.Background(), "New", "Booting")
 	})
 }
 
@@ -188,11 +188,11 @@ func TestPatternExpansion(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test transitions from different states
-		err = reg.ExecutePreTransitionHooks("StatusNew", "StatusError")
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StatusNew", "StatusError")
 		require.NoError(t, err)
 		assert.True(t, called["StatusNew"])
 
-		err = reg.ExecutePreTransitionHooks("StatusBooting", "StatusError")
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StatusBooting", "StatusError")
 		require.NoError(t, err)
 		assert.True(t, called["StatusBooting"])
 	})
@@ -216,9 +216,9 @@ func TestPatternExpansion(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = reg.ExecutePreTransitionHooks("StatusNew", "StatusError")
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StatusNew", "StatusError")
 		require.NoError(t, err)
-		err = reg.ExecutePreTransitionHooks("StatusBooting", "StatusError")
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StatusBooting", "StatusError")
 		require.NoError(t, err)
 
 		assert.Equal(t, []string{"StatusNew", "StatusBooting"}, executionOrder)
@@ -310,7 +310,7 @@ func TestPatternExpansion(t *testing.T) {
 		require.NoError(t, err)
 
 		// Execute one transition to verify hook is registered
-		err = reg.ExecutePreTransitionHooks("StatusNew", "StatusBooting")
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StatusNew", "StatusBooting")
 		require.NoError(t, err)
 		assert.Equal(t, 1, executed["StatusNew->StatusBooting"])
 	})

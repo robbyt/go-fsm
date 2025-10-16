@@ -1,6 +1,7 @@
 package fsm
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -56,6 +57,7 @@ type mockCallbackExecutor struct {
 	preTransitionErr  error
 	preTransitions    []transition
 	postTransitions   []transition
+	receivedContexts  []context.Context
 	shouldPanicOnPre  bool
 	shouldPanicOnPost bool
 }
@@ -67,27 +69,30 @@ type transition struct {
 
 func newMockCallbackExecutor() *mockCallbackExecutor {
 	return &mockCallbackExecutor{
-		preTransitions:  []transition{},
-		postTransitions: []transition{},
+		preTransitions:   []transition{},
+		postTransitions:  []transition{},
+		receivedContexts: []context.Context{},
 	}
 }
 
-func (m *mockCallbackExecutor) ExecutePreTransitionHooks(from, to string) error {
+func (m *mockCallbackExecutor) ExecutePreTransitionHooks(ctx context.Context, from, to string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.shouldPanicOnPre {
 		panic("pre-transition panic")
 	}
+	m.receivedContexts = append(m.receivedContexts, ctx)
 	m.preTransitions = append(m.preTransitions, transition{from, to})
 	return m.preTransitionErr
 }
 
-func (m *mockCallbackExecutor) ExecutePostTransitionHooks(from, to string) {
+func (m *mockCallbackExecutor) ExecutePostTransitionHooks(ctx context.Context, from, to string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.shouldPanicOnPost {
 		panic("post-transition panic")
 	}
+	m.receivedContexts = append(m.receivedContexts, ctx)
 	m.postTransitions = append(m.postTransitions, transition{from, to})
 }
 
@@ -101,6 +106,12 @@ func (m *mockCallbackExecutor) getPostTransitions() []transition {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]transition(nil), m.postTransitions...)
+}
+
+func (m *mockCallbackExecutor) getReceivedContexts() []context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]context.Context(nil), m.receivedContexts...)
 }
 
 // Unit tests with mocked dependencies
@@ -546,5 +557,86 @@ func TestFSM_Options(t *testing.T) {
 		fsm, err := New("state1", mockDB, WithLogHandler(nil))
 		require.Error(t, err)
 		assert.Nil(t, fsm)
+	})
+}
+
+// TestFSM_TransitionWithContext verifies context flows through to hooks
+func TestFSM_TransitionWithContext(t *testing.T) {
+	t.Parallel()
+
+	type contextKey string
+	const requestIDKey contextKey = "request_id"
+
+	t.Run("Context with values flows to hooks", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+
+		// Create context with a value
+		ctx := context.WithValue(context.Background(), requestIDKey, "req-123")
+
+		err = fsm.TransitionWithContext(ctx, "state2")
+		require.NoError(t, err)
+
+		// Verify hooks received the context
+		receivedContexts := mockCallbacks.getReceivedContexts()
+		require.Len(t, receivedContexts, 2) // pre + post hooks
+
+		// Check pre-transition hook got the context
+		preCtx := receivedContexts[0]
+		assert.Equal(t, "req-123", preCtx.Value(requestIDKey))
+
+		// Check post-transition hook got the context
+		postCtx := receivedContexts[1]
+		assert.Equal(t, "req-123", postCtx.Value(requestIDKey))
+	})
+
+	t.Run("Regular Transition uses Background context", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+
+		err = fsm.Transition("state2")
+		require.NoError(t, err)
+
+		// Verify hooks received context (should be Background)
+		receivedContexts := mockCallbacks.getReceivedContexts()
+		require.Len(t, receivedContexts, 2)
+
+		// Background context has no values
+		preCtx := receivedContexts[0]
+		assert.Nil(t, preCtx.Value(requestIDKey))
+	})
+
+	t.Run("TransitionIfCurrentStateWithContext flows context", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+
+		ctx := context.WithValue(context.Background(), requestIDKey, "req-456")
+
+		err = fsm.TransitionIfCurrentStateWithContext(ctx, "state1", "state2")
+		require.NoError(t, err)
+
+		// Verify context flowed through
+		receivedContexts := mockCallbacks.getReceivedContexts()
+		require.Len(t, receivedContexts, 2)
+		assert.Equal(t, "req-456", receivedContexts[0].Value(requestIDKey))
+		assert.Equal(t, "req-456", receivedContexts[1].Value(requestIDKey))
 	})
 }

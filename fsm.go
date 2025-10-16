@@ -36,6 +36,7 @@ limitations under the License.
 package fsm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -54,31 +55,21 @@ type transitionDB interface {
 // Machine represents a finite state machine that tracks its current state
 // and manages state transitions.
 type Machine struct {
-	// mutex protects the 'state' field during transitions and SetState.
-	// RLock is used for GetState if not using atomic.Value.
-	mutex sync.RWMutex
-	// state stores the current state. Using atomic.Value allows lock-free reads via GetState.
-	// If simplified, replace with `state string` and use mutex.RLock in GetState.
-	state atomic.Value
-	// transitions provides fast lookups for allowed transitions.
+	mutex       sync.RWMutex
+	state       atomic.Value
 	transitions transitionDB
-	// logHandler is the underlying structured logging handler.
-	logHandler slog.Handler
-	// logger is the FSM's specific logger instance.
-	logger *slog.Logger
-	// callbacks holds the callback executor implementation.
-	callbacks CallbackExecutor
+	logHandler  slog.Handler
+	logger      *slog.Logger
+	callbacks   CallbackExecutor
 }
 
 // persistentState is used for JSON marshaling/unmarshaling.
-// It only stores the essential state information.
 // TODO: add ALL states and transitions to the JSON representation
 type persistentState struct {
 	State string `json:"state"`
 }
 
-// New initializes a new finite state machine with the specified initial state and
-// allowed state transitions. This is the advanced constructor that accepts a transitionDB interface.
+// New creates a finite state machine with the specified initial state and transitions.
 // For simpler usage with inline maps, see NewSimple().
 //
 // Example usage:
@@ -98,17 +89,14 @@ func New(
 	trans transitionDB,
 	opts ...Option,
 ) (*Machine, error) {
-	// Use default logger
 	handler := slog.Default().
 		Handler().
 		WithGroup("fsm")
 
-	// Validate that transitions are defined.
 	if trans == nil {
 		return nil, fmt.Errorf("%w: transitions is nil", ErrAvailableStateData)
 	}
 
-	// Validate that the initial state is actually defined in the transitions.
 	if !trans.HasState(initialState) {
 		return nil, fmt.Errorf(
 			"%w: initial state '%s' is not defined in allowedTransitions",
@@ -117,7 +105,6 @@ func New(
 		)
 	}
 
-	// Create the machine instance
 	m := &Machine{
 		transitions: trans,
 		logHandler:  handler,
@@ -125,7 +112,6 @@ func New(
 	}
 	m.state.Store(initialState)
 
-	// Apply user options.
 	for _, opt := range opts {
 		if err := opt(m); err != nil {
 			return nil, fmt.Errorf("failed to apply option: %w", err)
@@ -135,8 +121,7 @@ func New(
 	return m, nil
 }
 
-// NewSimple creates a new FSM with a map-based transition configuration.
-// This is a convenience wrapper around New() that handles transition validation.
+// NewSimple creates a FSM with a map-based transition configuration.
 //
 // Example usage:
 //
@@ -158,20 +143,15 @@ func NewSimple(
 }
 
 // MarshalJSON implements the json.Marshaler interface.
-// It returns the current state of the FSM as a JSON object: {"state": "CURRENT_STATE"}.
 func (fsm *Machine) MarshalJSON() ([]byte, error) {
-	// Get the current state safely.
 	currentState := fsm.GetState()
 
-	// Create the struct for marshaling.
 	pState := persistentState{
 		State: currentState,
 	}
 
-	// Marshal the persistence struct into JSON bytes.
 	jsonData, err := json.Marshal(pState)
 	if err != nil {
-		// This should never happen
 		return nil, fmt.Errorf("failed to marshal FSM state: %w", err)
 	}
 
@@ -179,31 +159,33 @@ func (fsm *Machine) MarshalJSON() ([]byte, error) {
 }
 
 // GetState returns the current state of the finite state machine.
-// This read is lock-free due to the use of atomic.Value.
 func (fsm *Machine) GetState() string {
 	return fsm.state.Load().(string)
 }
 
-// GetAllStates returns all allowed states that have been added to this FSM
+// GetAllStates returns all allowed states that have been added to this FSM.
 func (fsm *Machine) GetAllStates() []string {
 	return fsm.transitions.GetAllStates()
 }
 
 // setState updates the FSM's state atomically.
-// It assumes that the caller has already acquired the necessary write lock (fsm.mutex).
-// Broadcast to subscribers is handled by post-transition hooks.
+// Assumes the caller holds the write lock.
 func (fsm *Machine) setState(state string) {
 	fsm.state.Store(state)
 }
 
-// SetState updates the FSM's state to the provided state, skipping the transition rules and pre-transition hooks.
-// This will always succeed, assuming the requested state is actually a valid *from* state.
+// SetState updates the FSM's state, bypassing transition rules and pre-transition hooks.
+// Returns an error if the state is not defined in the transition table.
 func (fsm *Machine) SetState(state string) error {
+	return fsm.SetStateWithContext(context.Background(), state)
+}
+
+// SetStateWithContext updates the FSM's state with a context, bypassing transition rules and pre-transition hooks.
+// Returns an error if the state is not defined in the transition table.
+func (fsm *Machine) SetStateWithContext(ctx context.Context, state string) error {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 
-	// Check if the target state is a known **from** state in our transitions.
-	// This ensures the state is valid according to the machine's configuration.
 	if !fsm.transitions.HasState(state) {
 		return fmt.Errorf(
 			"%w: state '%s' is not defined as a source state in transitions",
@@ -216,35 +198,53 @@ func (fsm *Machine) SetState(state string) error {
 	fsm.setState(state)
 	fsm.logger.Debug("Set state", "from", fromState, "to", state)
 
-	// Manually call post-transition hooks since we bypassed normal transition flow
 	if fsm.callbacks != nil {
-		fsm.callbacks.ExecutePostTransitionHooks(fromState, state)
+		fsm.callbacks.ExecutePostTransitionHooks(ctx, fromState, state)
 	}
 
 	return nil
 }
 
-// Transition changes the FSM's state to toState. It ensures that the transition adheres to the
-// allowed transitions defined during initialization. Returns ErrInvalidState if the current state
-// is somehow invalid or ErrInvalidStateTransition if the transition is not allowed.
+// Transition changes the FSM's state to toState if the transition is allowed.
+// Returns an error if the transition is not permitted.
 func (fsm *Machine) Transition(toState string) error {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
-	return fsm.transition(toState)
+	return fsm.transition(context.Background(), toState)
 }
 
-// TransitionBool is similar to Transition, but returns a boolean indicating whether the transition
-// was successful. It suppresses the specific error reason.
+// TransitionWithContext changes the FSM's state to toState with a context.
+// The context is passed to all hooks for request-scoped values, tracing, or cancellation.
+// Returns an error if the transition is not permitted.
+func (fsm *Machine) TransitionWithContext(ctx context.Context, toState string) error {
+	fsm.mutex.Lock()
+	defer fsm.mutex.Unlock()
+	return fsm.transition(ctx, toState)
+}
+
+// TransitionBool returns true if the transition to toState succeeds, false otherwise.
 func (fsm *Machine) TransitionBool(toState string) bool {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
-	return fsm.transition(toState) == nil
+	return fsm.transition(context.Background(), toState) == nil
 }
 
-// TransitionIfCurrentState changes the FSM's state to toState only if the current state matches
-// fromState. This returns an error if the current state does not match or if the transition is
-// not allowed from fromState to toState.
+// TransitionBoolWithContext returns true if the transition to toState succeeds with a context, false otherwise.
+func (fsm *Machine) TransitionBoolWithContext(ctx context.Context, toState string) bool {
+	fsm.mutex.Lock()
+	defer fsm.mutex.Unlock()
+	return fsm.transition(ctx, toState) == nil
+}
+
+// TransitionIfCurrentState transitions to toState only if the current state matches fromState.
+// Returns an error if the current state does not match or if the transition is not allowed.
 func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
+	return fsm.TransitionIfCurrentStateWithContext(context.Background(), fromState, toState)
+}
+
+// TransitionIfCurrentStateWithContext transitions to toState with a context only if the current state matches fromState.
+// Returns an error if the current state does not match or if the transition is not allowed.
+func (fsm *Machine) TransitionIfCurrentStateWithContext(ctx context.Context, fromState, toState string) error {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 
@@ -259,21 +259,15 @@ func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
 		)
 	}
 
-	return fsm.transition(toState)
+	return fsm.transition(ctx, toState)
 }
 
-// transition attempts to change the FSM's state from the current state to toState.
-// It returns an error if the transition is invalid according to the configured rules.
-// Assumes the caller holds the write lock (fsm.mutex).
-// Executes callbacks in the following order:
-// 1. Validate transition is allowed (can reject transition)
-// 2. Pre-transition hooks (can reject transition)
-// 3. State update (point of no return)
-// 4. Post-transition hooks (cannot reject)
-func (fsm *Machine) transition(toState string) error {
+// transition changes the FSM's state from the current state to toState.
+// Assumes the caller holds the write lock.
+// The context is passed to all hooks for request-scoped values and tracing.
+func (fsm *Machine) transition(ctx context.Context, toState string) error {
 	currentState := fsm.GetState()
 
-	// 1. Validate this transition is allowed by querying the transitionDB
 	if !fsm.transitions.IsTransitionAllowed(currentState, toState) {
 		return fmt.Errorf(
 			"%w: transition from '%s' to '%s' is not allowed",
@@ -283,20 +277,17 @@ func (fsm *Machine) transition(toState string) error {
 		)
 	}
 
-	// 2. Execute pre-transition hooks
 	if fsm.callbacks != nil {
-		if err := fsm.callbacks.ExecutePreTransitionHooks(currentState, toState); err != nil {
+		if err := fsm.callbacks.ExecutePreTransitionHooks(ctx, currentState, toState); err != nil {
 			return err
 		}
 	}
 
-	// 3. UPDATE STATE (point of no return)
 	fsm.setState(toState)
 	fsm.logger.Debug("Transition successful", "from", currentState, "to", toState)
 
-	// 4. Execute post-transition hooks
 	if fsm.callbacks != nil {
-		fsm.callbacks.ExecutePostTransitionHooks(currentState, toState)
+		fsm.callbacks.ExecutePostTransitionHooks(ctx, currentState, toState)
 	}
 
 	return nil

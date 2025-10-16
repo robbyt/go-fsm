@@ -128,13 +128,13 @@ func (r *Registry) resolveTransitionPatterns(fromPatterns, toPatterns []string) 
 
 // ExecutePreTransitionHooks runs all registered pre-transition hooks for the specific transition in FIFO order.
 // Returns an error if any pre-transition hook fails.
-func (r *Registry) ExecutePreTransitionHooks(from, to string) error {
+func (r *Registry) ExecutePreTransitionHooks(ctx context.Context, from, to string) error {
 	r.mu.RLock()
 	preTransitionHooks := r.preTransitionHooks[transitionKey{from, to}]
 	r.mu.RUnlock()
 
 	for i, cb := range preTransitionHooks {
-		if err := r.safeCallCallback(cb, from, to); err != nil {
+		if err := r.safeCallCallback(ctx, cb, from, to); err != nil {
 			return fmt.Errorf("%w during transition at index %d: %w",
 				ErrCallbackFailed, i, err)
 		}
@@ -144,13 +144,13 @@ func (r *Registry) ExecutePreTransitionHooks(from, to string) error {
 
 // ExecutePostTransitionHooks runs all registered post-transition hooks in FIFO order.
 // Panics are recovered and logged but do not propagate.
-func (r *Registry) ExecutePostTransitionHooks(from, to string) {
+func (r *Registry) ExecutePostTransitionHooks(ctx context.Context, from, to string) {
 	r.mu.RLock()
 	postHooks := r.postTransition[transitionKey{from, to}]
 	r.mu.RUnlock()
 
 	for _, hook := range postHooks {
-		r.safeCallAction(hook, from, to)
+		r.safeCallAction(ctx, hook, from, to)
 	}
 }
 
@@ -211,7 +211,7 @@ func (r *Registry) Clear() {
 
 // safeCallCallback executes a callback with panic recovery.
 // If the callback panics, the panic is recovered and returned as an error.
-func (r *Registry) safeCallCallback(cb CallbackFunc, from, to string) (err error) {
+func (r *Registry) safeCallCallback(ctx context.Context, cb CallbackFunc, from, to string) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.logger.Error("Callback panicked",
@@ -220,13 +220,12 @@ func (r *Registry) safeCallCallback(cb CallbackFunc, from, to string) (err error
 		}
 	}()
 
-	ctx := context.Background()
 	return cb(ctx, from, to)
 }
 
 // safeCallAction executes an action with panic recovery.
 // Panics are logged but do not propagate.
-func (r *Registry) safeCallAction(action ActionFunc, from, to string) {
+func (r *Registry) safeCallAction(ctx context.Context, action ActionFunc, from, to string) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.logger.Error("Action panicked",
@@ -234,6 +233,5 @@ func (r *Registry) safeCallAction(action ActionFunc, from, to string) {
 		}
 	}()
 
-	ctx := context.Background()
 	action(ctx, from, to)
 }

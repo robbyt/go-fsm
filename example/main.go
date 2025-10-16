@@ -32,7 +32,7 @@ import (
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
-func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machine, error) {
+func run(ctx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machine, error) {
 	// Create callback registry
 	registry, err := hooks.NewRegistry(
 		hooks.WithLogger(logger),
@@ -42,7 +42,7 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
 
-	// Create FSM with typical transitions
+	// Create FSM with "typical" transitions
 	machine, err := fsm.New(
 		transitions.StatusNew,
 		transitions.Typical,
@@ -53,22 +53,20 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 		return nil, fmt.Errorf("failed to create FSM: %w", err)
 	}
 
-	// Create standalone broadcast manager
+	// Create standalone broadcast manager, and register the hook with the callback registry
 	broadcastManager := broadcast.NewManager(logger.Handler())
-
-	// Register broadcast hook to enable state change notifications
 	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register broadcast hook: %w", err)
 	}
 
-	// Start goroutine to print state changes
-	stateChan, err := broadcastManager.GetStateChan(parentCtx)
+	// create a channel to receive the state change broadcasts, using WithTimeout(-1) to block indefinitely
+	stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithTimeout(-1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get state channel: %w", err)
 	}
 
-	// Send initial state to subscribers
+	// Send the initial state to subscribers
 	broadcastManager.Broadcast(machine.GetState())
 
 	go func() {
@@ -79,14 +77,14 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 		}
 	}()
 
-	// Perform state transitions
+	// Perform state transitions using parent context
 	time.Sleep(100 * time.Millisecond)
-	if err := machine.Transition(transitions.StatusBooting); err != nil {
+	if err := machine.TransitionWithContext(ctx, transitions.StatusBooting); err != nil {
 		return nil, fmt.Errorf("transition to Booting failed: %w", err)
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	if err := machine.Transition(transitions.StatusRunning); err != nil {
+	if err := machine.TransitionWithContext(ctx, transitions.StatusRunning); err != nil {
 		return nil, fmt.Errorf("transition to Running failed: %w", err)
 	}
 
@@ -114,7 +112,18 @@ func main() {
 	// Wait for signal
 	<-ctx.Done()
 
-	// Print final state
+	// Perform graceful shutdown transitions
+	shutdownCtx := context.Background()
+	if err := machine.TransitionWithContext(shutdownCtx, transitions.StatusStopping); err != nil {
+		logger.Error("transition to Stopping failed", "error", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if err := machine.TransitionWithContext(shutdownCtx, transitions.StatusStopped); err != nil {
+		logger.Error("transition to Stopped failed", "error", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
 	finalState := machine.GetState()
 	logger.Info("Shutting down", "final_state", finalState)
 	fmt.Printf("Final state: %s\n", finalState)

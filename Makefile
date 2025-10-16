@@ -38,3 +38,8 @@ lint:
 lint-fix:
 	golangci-lint fmt ./...
 	golangci-lint run --fix ./...
+
+## example: Build the example binary
+.PHONY: example
+example:
+	go build -o example/example ./example
