@@ -18,129 +18,112 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/robbyt/go-fsm"
+	"github.com/robbyt/go-fsm/v2"
+	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
+	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
-// Define custom states
-const (
-	StatusOnline  = "StatusOnline"
-	StatusOffline = "StatusOffline"
-	StatusUnknown = "StatusUnknown"
-)
-
-// newLogger creates a new logger with time attribute omitted
-func newLogger() *slog.Logger {
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.TimeKey {
-				return slog.Attr{} // Omit the time attribute
-			}
-			return a
-		},
-	})
-	return slog.New(handler).WithGroup("example")
-}
-
-// getTransitionsConfig returns the allowed state transition configuration
-func getTransitionsConfig() fsm.TransitionsConfig {
-	return fsm.TransitionsConfig{
-		StatusOnline:  []string{StatusOffline, StatusUnknown},
-		StatusOffline: []string{StatusOnline, StatusUnknown},
-		StatusUnknown: []string{},
+func run(ctx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machine, error) {
+	// Create callback registry
+	registry, err := hooks.NewRegistry(
+		hooks.WithLogger(logger),
+		hooks.WithTransitions(transitions.Typical),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
-}
 
-// newStateMachine creates a new FSM with the given logger and initial state
-func newStateMachine(logger *slog.Logger, initialState string) (*fsm.Machine, error) {
-	return fsm.New(logger.Handler(), initialState, getTransitionsConfig())
-}
+	// Create FSM with "typical" transitions
+	machine, err := fsm.New(
+		transitions.StatusNew,
+		transitions.Typical,
+		fsm.WithLogger(logger),
+		fsm.WithCallbackRegistry(registry),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create FSM: %w", err)
+	}
 
-// listenForStateChanges starts a goroutine that listens for state changes
-// Returns a channel that will be closed when the listener exits
-func listenForStateChanges(
-	ctx context.Context,
-	logger *slog.Logger,
-	machine *fsm.Machine,
-) chan struct{} {
-	done := make(chan struct{})
-	listener := machine.GetStateChan(ctx)
+	// Create standalone broadcast manager, and register the hook with the callback registry
+	broadcastManager := broadcast.NewManager(logger.Handler())
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register broadcast hook: %w", err)
+	}
 
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case state, ok := <-listener:
-				if !ok {
-					logger.Debug("State channel closed")
-					return
-				}
+	// create a channel to receive the state change broadcasts, using WithTimeout(-1) to block indefinitely
+	stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithTimeout(-1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get state channel: %w", err)
+	}
 
-				logger.Info("State change received", "state", state)
-
-			case <-ctx.Done():
-				logger.Debug("Context done, exiting listener")
-				return
-			}
-		}
-	}()
-
-	return done
-}
-
-// waitForOfflineState waits for the machine to transition to StatusOffline and then cancels the context
-func waitForOfflineState(
-	ctx context.Context,
-	cancel context.CancelFunc,
-	logger *slog.Logger,
-	machine *fsm.Machine,
-) {
-	stateChan := machine.GetStateChan(ctx)
+	// Send the initial state to subscribers
+	broadcastManager.Broadcast(machine.GetState())
 
 	go func() {
 		for state := range stateChan {
-			if state == StatusOffline {
-				logger.Info("Received offline state, canceling context...")
-				cancel()
-				return
-			}
+			// Writing to output writer; errors are acceptable in this demo
+			//nolint:errcheck
+			fmt.Fprintf(output, "State: %s\n", state)
 		}
 	}()
+
+	// Perform state transitions using parent context
+	time.Sleep(100 * time.Millisecond)
+	if err := machine.TransitionWithContext(ctx, transitions.StatusBooting); err != nil {
+		return nil, fmt.Errorf("transition to Booting failed: %w", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if err := machine.TransitionWithContext(ctx, transitions.StatusRunning); err != nil {
+		return nil, fmt.Errorf("transition to Running failed: %w", err)
+	}
+
+	return machine, nil
 }
 
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	// Set up signal handling for graceful shutdown
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	logger := newLogger()
-
-	// Create a new FSM
-	machine, err := newStateMachine(logger, StatusOnline)
+	machine, err := run(ctx, logger, os.Stdout)
 	if err != nil {
-		logger.Error(err.Error())
+		logger.Error("application failed", "error", err)
 		os.Exit(1)
 	}
 
-	// Listen and log all state changes
-	done := listenForStateChanges(ctx, logger, machine)
+	logger.Info("Application running", "state", machine.GetState())
+	logger.Info("Press Ctrl+C to shutdown...")
 
-	// Set up a 2nd listener specifically for acting on the offline state
-	waitForOfflineState(ctx, cancel, logger, machine)
+	// Wait for signal
+	<-ctx.Done()
 
-	// Transition to StatusOffline after a small delay
+	// Perform graceful shutdown transitions
+	if err := machine.Transition(transitions.StatusStopping); err != nil {
+		logger.Error("transition to Stopping failed", "error", err)
+	}
+
 	time.Sleep(100 * time.Millisecond)
-	logger.Debug("Transitioning to offline state")
-	err = machine.Transition(StatusOffline)
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
+	if err := machine.Transition(transitions.StatusStopped); err != nil {
+		logger.Error("transition to Stopped failed", "error", err)
 	}
 
-	// Wait for the done signal from the listner goroutine
-	<-done
-	logger.Info("Done.")
+	time.Sleep(100 * time.Millisecond)
+	finalState := machine.GetState()
+	logger.Info("Shutting down", "final_state", finalState)
+	fmt.Printf("Final state: %s\n", finalState)
 }

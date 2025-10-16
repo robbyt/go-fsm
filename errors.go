@@ -18,14 +18,11 @@ package fsm
 
 import "errors"
 
-// ErrAvailableStateData is returned when the available state data is not correctly formatted
-var ErrAvailableStateData = errors.New("available state data is malformed")
+// ErrInvalidConfiguration is returned when the FSM configuration is invalid
+var ErrInvalidConfiguration = errors.New("invalid FSM configuration")
 
 // ErrCurrentStateIncorrect is returned when the current state does not match with expectations
 var ErrCurrentStateIncorrect = errors.New("current state is incorrect")
-
-// ErrInvalidState is returned when the state is somehow invalid
-var ErrInvalidState = errors.New("state is invalid")
 
 // ErrInvalidStateTransition is returned when the state transition is invalid
 var ErrInvalidStateTransition = errors.New("state transition is invalid")

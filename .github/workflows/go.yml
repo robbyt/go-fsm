@@ -51,7 +51,7 @@ jobs:
       - name: Build example
         run: |
           cd example
-          go run main.go
+          timeout 1s go run main.go || [ $? -eq 124 ]
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6

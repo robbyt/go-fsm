@@ -17,200 +17,55 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
-	"time"
+	"testing/synctest"
 
+	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestGetTransitionsConfig(t *testing.T) {
-	t.Parallel()
+func TestRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		logger := slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		}))
 
-	config := getTransitionsConfig()
-
-	// Test that the transition config has the expected states
-	assert.Contains(t, config, StatusOnline, "Config should contain StatusOnline")
-	assert.Contains(t, config, StatusOffline, "Config should contain StatusOffline")
-	assert.Contains(t, config, StatusUnknown, "Config should contain StatusUnknown")
-
-	// Test that each state has the expected transitions
-	assert.ElementsMatch(t, []string{StatusOffline, StatusUnknown}, config[StatusOnline],
-		"StatusOnline should transition to StatusOffline and StatusUnknown")
-	assert.ElementsMatch(t, []string{StatusOnline, StatusUnknown}, config[StatusOffline],
-		"StatusOffline should transition to StatusOnline and StatusUnknown")
-	assert.Empty(t, config[StatusUnknown],
-		"StatusUnknown should not have any allowed transitions")
-}
-
-func TestNewLogger(t *testing.T) {
-	t.Parallel()
-
-	logger := newLogger()
-
-	// Check that the logger is not nil
-	assert.NotNil(t, logger, "NewLogger should return a non-nil logger")
-}
-
-func TestNewStateMachine(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name          string
-		initialState  string
-		expectedError bool
-	}{
-		{
-			name:          "Valid initial state",
-			initialState:  StatusOnline,
-			expectedError: false,
-		},
-		{
-			name:          "Invalid initial state",
-			initialState:  "InvalidState",
-			expectedError: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			logger := newLogger()
-			machine, err := newStateMachine(logger, tc.initialState)
-
-			if tc.expectedError {
-				require.Error(t, err, "Expected an error with invalid initial state")
-				assert.Nil(t, machine, "Machine should be nil when error occurs")
-			} else {
-				require.NoError(t, err, "Should not error with valid initial state")
-				assert.NotNil(t, machine, "Machine should not be nil with valid initial state")
-				assert.Equal(t, tc.initialState, machine.GetState(),
-					"Machine should have the correct initial state")
-			}
-		})
-	}
-}
-
-func TestListenForStateChanges(t *testing.T) {
-	t.Parallel()
-
-	t.Run("Receives state changes", func(t *testing.T) {
-		logger := newLogger()
-		machine, err := newStateMachine(logger, StatusOnline)
-		require.NoError(t, err)
-
+		var output bytes.Buffer
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		done := listenForStateChanges(ctx, logger, machine)
-
-		// Wait a moment for the goroutine to start
-		time.Sleep(50 * time.Millisecond)
-
-		// Transition to a new state
-		err = machine.Transition(StatusOffline)
+		machine, err := run(ctx, logger, &output)
 		require.NoError(t, err)
+		require.NotNil(t, machine)
 
-		// Cancel context to trigger exit of the listener goroutine
+		// Wait for all transitions and broadcasts to complete
+		synctest.Wait()
+
+		// Cancel context to stop the state broadcast
 		cancel()
 
-		// Wait for the done signal from the goroutine
-		select {
-		case <-done:
-			// This is the expected result
-		case <-time.After(time.Second):
-			t.Fatal("Timed out waiting for done signal")
-		}
+		// Wait for goroutine to finish
+		synctest.Wait()
+
+		// Verify all three states were printed
+		outputStr := output.String()
+		assert.Contains(t, outputStr, "State: New")
+		assert.Contains(t, outputStr, "State: Booting")
+		assert.Contains(t, outputStr, "State: Running")
+
+		// Verify states appear in order
+		lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, "State: New", lines[0])
+		assert.Equal(t, "State: Booting", lines[1])
+		assert.Equal(t, "State: Running", lines[2])
+
+		// Verify final state
+		assert.Equal(t, transitions.StatusRunning, machine.GetState())
 	})
-
-	t.Run("Handles context cancellation", func(t *testing.T) {
-		logger := newLogger()
-		machine, err := newStateMachine(logger, StatusOnline)
-		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-
-		done := listenForStateChanges(ctx, logger, machine)
-
-		// Wait a moment for the goroutine to start
-		time.Sleep(50 * time.Millisecond)
-
-		// Cancel the context
-		cancel()
-
-		// Wait for the done signal from the goroutine
-		select {
-		case <-done:
-			// This is the expected result
-		case <-time.After(time.Second):
-			t.Fatal("Timed out waiting for done signal after context cancellation")
-		}
-	})
-}
-
-func TestWaitForOfflineState(t *testing.T) {
-	t.Parallel()
-
-	t.Run("Cancels context when state changes to offline", func(t *testing.T) {
-		logger := newLogger()
-		machine, err := newStateMachine(logger, StatusOnline)
-		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-
-		// Set up the wait for offline state
-		waitForOfflineState(ctx, cancel, logger, machine)
-
-		// Wait a moment for the goroutine to start
-		time.Sleep(50 * time.Millisecond)
-
-		// Transition to offline state
-		err = machine.Transition(StatusOffline)
-		require.NoError(t, err)
-
-		// The context should be canceled shortly
-		select {
-		case <-ctx.Done():
-			// This is the expected result - context was cancelled
-		case <-time.After(time.Second):
-			t.Fatal("Timed out waiting for context to be cancelled")
-		}
-	})
-}
-
-func TestIntegration(t *testing.T) {
-	// This test mimics the flow in main() but in a testable way
-	logger := newLogger()
-
-	// Create a new FSM
-	machine, err := newStateMachine(logger, StatusOnline)
-	require.NoError(t, err)
-
-	// Check initial state
-	assert.Equal(t, StatusOnline, machine.GetState())
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Set up both listeners
-	done := listenForStateChanges(ctx, logger, machine)
-	waitForOfflineState(ctx, cancel, logger, machine)
-
-	// Wait a moment for the goroutines to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Transition to offline state
-	err = machine.Transition(StatusOffline)
-	require.NoError(t, err)
-
-	// Wait for the done signal
-	select {
-	case <-done:
-		// This is expected
-	case <-time.After(time.Second):
-		t.Fatal("Timed out waiting for done signal")
-	}
-
-	// Verify final state
-	assert.Equal(t, StatusOffline, machine.GetState())
 }

@@ -2,317 +2,315 @@ package fsm
 
 import (
 	"context"
-	"encoding/json" // Added for JSON tests
-	"log/slog"      // Added for JSON tests (handler)
-	"os"            // Added for JSON tests (handler)
+	"encoding/json"
+	"log/slog"
+	"os"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestFSM(t *testing.T) {
+// mockTransitionDB implements the transitionDB interface for unit testing
+type mockTransitionDB struct {
+	allowedTransitions map[string][]string
+	states             []string
+}
+
+func newMockTransitionDB(transitions map[string][]string) *mockTransitionDB {
+	states := make([]string, 0, len(transitions))
+	for state := range transitions {
+		states = append(states, state)
+	}
+	return &mockTransitionDB{
+		allowedTransitions: transitions,
+		states:             states,
+	}
+}
+
+func (m *mockTransitionDB) IsTransitionAllowed(from, to string) bool {
+	allowed, ok := m.allowedTransitions[from]
+	if !ok {
+		return false
+	}
+	for _, state := range allowed {
+		if state == to {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *mockTransitionDB) HasState(state string) bool {
+	_, ok := m.allowedTransitions[state]
+	return ok
+}
+
+func (m *mockTransitionDB) GetAllStates() []string {
+	return append([]string(nil), m.states...)
+}
+
+// mockCallbackExecutor implements the CallbackExecutor interface for unit testing
+type mockCallbackExecutor struct {
+	mu                sync.Mutex
+	preTransitionErr  error
+	preTransitions    []transition
+	postTransitions   []transition
+	receivedContexts  []context.Context
+	shouldPanicOnPre  bool
+	shouldPanicOnPost bool
+}
+
+type transition struct {
+	from string
+	to   string
+}
+
+func newMockCallbackExecutor() *mockCallbackExecutor {
+	return &mockCallbackExecutor{
+		preTransitions:   []transition{},
+		postTransitions:  []transition{},
+		receivedContexts: []context.Context{},
+	}
+}
+
+func (m *mockCallbackExecutor) ExecutePreTransitionHooks(ctx context.Context, from, to string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.shouldPanicOnPre {
+		panic("pre-transition panic")
+	}
+	m.receivedContexts = append(m.receivedContexts, ctx)
+	m.preTransitions = append(m.preTransitions, transition{from, to})
+	return m.preTransitionErr
+}
+
+func (m *mockCallbackExecutor) ExecutePostTransitionHooks(ctx context.Context, from, to string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.shouldPanicOnPost {
+		panic("post-transition panic")
+	}
+	m.receivedContexts = append(m.receivedContexts, ctx)
+	m.postTransitions = append(m.postTransitions, transition{from, to})
+}
+
+func (m *mockCallbackExecutor) getPreTransitions() []transition {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]transition(nil), m.preTransitions...)
+}
+
+func (m *mockCallbackExecutor) getPostTransitions() []transition {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]transition(nil), m.postTransitions...)
+}
+
+func (m *mockCallbackExecutor) getReceivedContexts() []context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]context.Context(nil), m.receivedContexts...)
+}
+
+// Unit tests with mocked dependencies
+func TestFSM_New_Validation(t *testing.T) {
 	t.Parallel()
 
-	t.Run("NewFSM with invalid initial status", func(t *testing.T) {
-		fsm, err := New(nil, "bla", TypicalTransitions)
+	t.Run("Nil transitions returns error", func(t *testing.T) {
+		fsm, err := New("initial", nil)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
-		require.ErrorIs(t, err, ErrInvalidState) // More specific check
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 	})
 
-	t.Run("NewFSM with nil allowedTransitions", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, nil)
+	t.Run("Initial state not in transitions returns error", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		fsm, err := New("invalid", mockDB)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
-		require.ErrorIs(t, err, ErrAvailableStateData) // More specific check
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 	})
 
-	t.Run("GetState and SetState", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, TypicalTransitions)
+	t.Run("Valid initialization succeeds", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		fsm, err := New("state1", mockDB)
 		require.NoError(t, err)
-
-		assert.Equal(t, StatusNew, fsm.GetState())
-
-		err = fsm.SetState(StatusRunning)
-		require.NoError(t, err)
-		assert.Equal(t, StatusRunning, fsm.GetState())
-
-		// Test setting an invalid state (not defined as a source state)
-		err = fsm.SetState("invalid_state")
-		require.ErrorIs(t, err, ErrInvalidState)
-		assert.Equal(t, StatusRunning, fsm.GetState()) // State should not change
-	})
-
-	t.Run("Transition", func(t *testing.T) {
-		testCases := []struct {
-			name          string
-			initialState  string
-			toState       string
-			expectedErr   error
-			expectedState string
-		}{
-			{
-				name:          "Valid transition from StatusNew to StatusBooting",
-				initialState:  StatusNew,
-				toState:       StatusBooting,
-				expectedErr:   nil,
-				expectedState: StatusBooting,
-			},
-			{
-				name:          "Invalid transition from StatusNew to StatusRunning",
-				initialState:  StatusNew,
-				toState:       StatusRunning,
-				expectedErr:   ErrInvalidStateTransition,
-				expectedState: StatusNew,
-			},
-			{
-				name:          "Invalid target state", // Added case
-				initialState:  StatusNew,
-				toState:       "NonExistentState",
-				expectedErr:   ErrInvalidStateTransition, // Transition is invalid as target doesn't exist in map value
-				expectedState: StatusNew,
-			},
-		}
-
-		for _, tc := range testCases {
-			t.Run(tc.name, func(t *testing.T) {
-				fsm, err := New(nil, tc.initialState, TypicalTransitions)
-				require.NoError(t, err)
-
-				err = fsm.Transition(tc.toState)
-
-				if tc.expectedErr != nil {
-					require.ErrorIs(t, err, tc.expectedErr)
-				} else {
-					require.NoError(t, err)
-				}
-
-				assert.Equal(t, tc.expectedState, fsm.GetState())
-			})
-		}
-	})
-
-	t.Run("TransitionIfCurrentState", func(t *testing.T) {
-		testCases := []struct {
-			name          string
-			initialState  string
-			fromState     string
-			toState       string
-			expectedErr   error
-			expectedState string
-		}{
-			{
-				name:          "Valid transition with matching current state",
-				initialState:  StatusNew,
-				fromState:     StatusNew,
-				toState:       StatusBooting,
-				expectedErr:   nil,
-				expectedState: StatusBooting,
-			},
-			{
-				name:          "Invalid transition due to mismatched current state",
-				initialState:  StatusBooting,
-				fromState:     StatusNew,
-				toState:       StatusRunning, // This transition would be valid if state matched
-				expectedErr:   ErrCurrentStateIncorrect,
-				expectedState: StatusBooting,
-			},
-			{
-				name:          "Invalid transition due to invalid state transition rule",
-				initialState:  StatusNew,
-				fromState:     StatusNew,
-				toState:       StatusRunning, // Invalid transition from New -> Running
-				expectedErr:   ErrInvalidStateTransition,
-				expectedState: StatusNew,
-			},
-		}
-
-		for _, tc := range testCases {
-			t.Run(tc.name, func(t *testing.T) {
-				fsm, err := New(nil, tc.initialState, TypicalTransitions)
-				require.NoError(t, err)
-
-				err = fsm.TransitionIfCurrentState(tc.fromState, tc.toState)
-
-				if tc.expectedErr != nil {
-					require.ErrorIs(t, err, tc.expectedErr)
-				} else {
-					require.NoError(t, err)
-				}
-
-				assert.Equal(t, tc.expectedState, fsm.GetState())
-			})
-		}
+		require.NotNil(t, fsm)
+		assert.Equal(t, "state1", fsm.GetState())
 	})
 }
 
-func TestFSM_Transition_DisallowedStateChange(t *testing.T) {
+func TestFSM_GetState(t *testing.T) {
 	t.Parallel()
 
-	fsm, err := New(nil, StatusNew, TypicalTransitions)
+	mockDB := newMockTransitionDB(map[string][]string{
+		"initial": {"next"},
+		"next":    {},
+	})
+
+	fsm, err := New("initial", mockDB)
 	require.NoError(t, err)
 
-	// Attempt transition to a state not allowed from StatusNew
-	err = fsm.Transition(StatusRunning)
-
-	require.ErrorIs(t, err, ErrInvalidStateTransition)
-	assert.Equal(t, StatusNew, fsm.GetState()) // State remains unchanged
+	assert.Equal(t, "initial", fsm.GetState())
 }
 
-// This test modifies internal state, which is generally discouraged,
-// but kept here as it was in the original file.
-func TestFSM_Transition_ModifiedAllowedTransitions(t *testing.T) {
+func TestFSM_SetState(t *testing.T) {
 	t.Parallel()
 
-	fsm, err := New(nil, StatusNew, TypicalTransitions)
-	require.NoError(t, err)
+	t.Run("SetState to valid state succeeds", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {"state3"},
+			"state3": {},
+		})
 
-	// Directly manipulate the internal index (fragile test)
-	fsm.mutex.Lock()
-	delete(fsm.transitionIndex, StatusNew)
-	fsm.mutex.Unlock()
+		fsm, err := New("state1", mockDB)
+		require.NoError(t, err)
 
-	t.Run("Transition with removed allowedTransitions", func(t *testing.T) {
-		err := fsm.Transition(StatusBooting)
-		// Now that StatusNew is not in the index, the error should be ErrInvalidState
-		require.ErrorIs(t, err, ErrInvalidState)
-		assert.Equal(t, StatusNew, fsm.GetState()) // State remains unchanged
+		err = fsm.SetState("state2")
+		require.NoError(t, err)
+		assert.Equal(t, "state2", fsm.GetState())
+	})
+
+	t.Run("SetState to invalid state returns error", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+
+		fsm, err := New("state1", mockDB)
+		require.NoError(t, err)
+
+		err = fsm.SetState("invalid")
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
+		assert.Equal(t, "state1", fsm.GetState()) // State should not change
+	})
+
+	t.Run("SetState calls post-transition hooks", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+
+		err = fsm.SetState("state2")
+		require.NoError(t, err)
+
+		postTransitions := mockCallbacks.getPostTransitions()
+		require.Len(t, postTransitions, 1)
+		assert.Equal(t, "state1", postTransitions[0].from)
+		assert.Equal(t, "state2", postTransitions[0].to)
 	})
 }
 
-func TestFSM_NoAllowedTransitions(t *testing.T) {
-	t.Parallel() // Added parallel execution
+func TestFSM_Transition(t *testing.T) {
+	t.Parallel()
 
-	// Create a small transition configuration with limited states
-	smallestTransitions := TransitionsConfig{
-		StatusNew:   {StatusError},
-		StatusError: {}, // StatusError has no outgoing transitions
-	}
-	fsm, err := New(nil, StatusNew, smallestTransitions)
-	require.NoError(t, err)
+	t.Run("Valid transition succeeds", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {"state3"},
+			"state3": {},
+		})
 
-	// Create a context with timeout to prevent test from hanging
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+		fsm, err := New("state1", mockDB)
+		require.NoError(t, err)
 
-	// Get state channel and read initial state
-	listener := fsm.GetStateChan(ctx)
-	require.NotNil(t, listener, "Listener channel should not be nil") // Added nil check
+		err = fsm.Transition("state2")
+		require.NoError(t, err)
+		assert.Equal(t, "state2", fsm.GetState())
+	})
 
-	select {
-	case initialState := <-listener:
-		assert.Equal(t, StatusNew, initialState, "First state should be the initial state")
-	case <-ctx.Done():
-		t.Fatal("Timed out waiting for initial state")
-	}
+	t.Run("Invalid transition returns error", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
 
-	// Transition to StatusError
-	err = fsm.Transition(StatusError)
-	require.NoError(t, err)
-	assert.Equal(t, StatusError, fsm.GetState())
+		fsm, err := New("state1", mockDB)
+		require.NoError(t, err)
 
-	// Read the updated state from channel
-	select {
-	case updatedState := <-listener:
-		assert.Equal(t, StatusError, updatedState, "Should receive state transition to StatusError")
-	case <-ctx.Done():
-		t.Fatal("Timed out waiting for state update to StatusError")
-	}
+		// state1 -> state3 is not allowed
+		err = fsm.Transition("state3")
+		require.ErrorIs(t, err, ErrInvalidStateTransition)
+		assert.Equal(t, "state1", fsm.GetState())
+	})
 
-	// Attempt invalid transition from StatusError (no transitions defined)
-	err = fsm.Transition(StatusNew)
-	require.ErrorIs(t, err, ErrInvalidStateTransition)
-	assert.Equal(t, StatusError, fsm.GetState(), "State should not change after failed transition")
+	t.Run("Transition to non-existent state returns error", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
 
-	// Verify no state update was sent after the failed transition
-	select {
-	case unexpectedState := <-listener:
-		t.Fatalf("No state transition expected, but received: %s", unexpectedState) // Use Fatalf
-	case <-time.After(100 * time.Millisecond):
-		// All good, no state update received
-	}
+		fsm, err := New("state1", mockDB)
+		require.NoError(t, err)
+
+		err = fsm.Transition("nonexistent")
+		require.ErrorIs(t, err, ErrInvalidStateTransition)
+		assert.Equal(t, "state1", fsm.GetState())
+	})
 }
 
-func TestFSM_RaceCondition_Broadcast(t *testing.T) {
-	t.Parallel() // Added parallel execution
+func TestFSM_Transition_WithCallbacks(t *testing.T) {
+	t.Parallel()
 
-	// Define states for testing
-	const (
-		StateA = "StateA"
-		StateB = "StateB"
-		StateC = "StateC"
-		StateD = "StateD"
-		StateE = "StateE"
-		StateF = "StateF"
-		StateG = "StateG"
-	)
+	t.Run("Pre and post-transition hooks execute in order", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
 
-	// Define transitions that form a chain
-	transitions := TransitionsConfig{
-		StateA: {StateB},
-		StateB: {StateC},
-		StateC: {StateD},
-		StateD: {StateE},
-		StateE: {StateF},
-		StateF: {StateG},
-		StateG: {StateA},
-	}
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
 
-	// Create the FSM starting at "StateA"
-	fsmMachine, err := New(nil, StateA, transitions)
-	require.NoError(t, err)
+		err = fsm.Transition("state2")
+		require.NoError(t, err)
 
-	// Create a context with timeout to prevent test from hanging
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+		preTransitions := mockCallbacks.getPreTransitions()
+		postTransitions := mockCallbacks.getPostTransitions()
 
-	// Create a listener for the FSM state changes
-	listener := fsmMachine.GetStateChan(ctx)
-	require.NotNil(t, listener, "Listener channel should not be nil") // Added nil check
+		require.Len(t, preTransitions, 1)
+		require.Len(t, postTransitions, 1)
 
-	// Read initial state
-	select {
-	case initialState := <-listener:
-		assert.Equal(t, StateA, initialState)
-	case <-ctx.Done():
-		t.Fatal("Timed out waiting for initial state")
-	}
+		assert.Equal(t, "state1", preTransitions[0].from)
+		assert.Equal(t, "state2", preTransitions[0].to)
+		assert.Equal(t, "state1", postTransitions[0].from)
+		assert.Equal(t, "state2", postTransitions[0].to)
+	})
 
-	// Perform a series of transitions
-	stateSequence := []string{StateB, StateC, StateD, StateE, StateF, StateG}
-	for _, state := range stateSequence {
-		err := fsmMachine.Transition(state)
-		require.NoError(t, err) // Use require for critical steps
+	t.Run("Pre-transition hook error prevents transition", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+		mockCallbacks.preTransitionErr = assert.AnError
 
-		// Verify the state changed correctly
-		assert.Equal(t, state, fsmMachine.GetState())
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
 
-		// Read the state update from channel with timeout
-		select {
-		case receivedState := <-listener:
-			assert.Equal(t, state, receivedState)
-		case <-ctx.Done(): // Check context cancellation
-			t.Fatalf("Context cancelled while waiting for state update to %s", state)
-		case <-time.After(500 * time.Millisecond): // Increased timeout slightly
-			t.Fatalf("Timed out waiting for state update to %s", state) // Use Fatalf
-		}
-	}
+		err = fsm.Transition("state2")
+		require.Error(t, err)
+		assert.Equal(t, "state1", fsm.GetState()) // State should not change
 
-	// Final transition back to StateA
-	err = fsmMachine.Transition(StateA)
-	require.NoError(t, err) // Use require
-	assert.Equal(t, StateA, fsmMachine.GetState())
+		preTransitions := mockCallbacks.getPreTransitions()
+		postTransitions := mockCallbacks.getPostTransitions()
 
-	select {
-	case receivedState := <-listener:
-		assert.Equal(t, StateA, receivedState)
-	case <-ctx.Done(): // Check context cancellation
-		t.Fatal("Context cancelled while waiting for final state update")
-	case <-time.After(500 * time.Millisecond): // Increased timeout slightly
-		t.Fatal("Timed out waiting for final state update") // Use Fatal
-	}
+		require.Len(t, preTransitions, 1) // Pre-hook was called
+		require.Empty(t, postTransitions) // Post-hook was NOT called
+	})
 }
 
 func TestFSM_TransitionBool(t *testing.T) {
@@ -320,229 +318,325 @@ func TestFSM_TransitionBool(t *testing.T) {
 
 	testCases := []struct {
 		name           string
-		initialState   string
-		toState        string
+		currentState   string
+		targetState    string
+		allowed        bool
 		expectedResult bool
 		expectedState  string
 	}{
 		{
-			name:           "Valid transition from StatusNew to StatusBooting",
-			initialState:   StatusNew,
-			toState:        StatusBooting,
+			name:           "Valid transition returns true",
+			currentState:   "state1",
+			targetState:    "state2",
+			allowed:        true,
 			expectedResult: true,
-			expectedState:  StatusBooting,
+			expectedState:  "state2",
 		},
 		{
-			name:           "Invalid transition from StatusNew to StatusRunning",
-			initialState:   StatusNew,
-			toState:        StatusRunning,
+			name:           "Invalid transition returns false",
+			currentState:   "state1",
+			targetState:    "state3",
+			allowed:        false,
 			expectedResult: false,
-			expectedState:  StatusNew,
-		},
-		{
-			name:           "Valid transition from StatusRunning to StatusReloading",
-			initialState:   StatusRunning,
-			toState:        StatusReloading,
-			expectedResult: true,
-			expectedState:  StatusReloading,
-		},
-		{
-			name:           "Invalid transition from StatusRunning to StatusNew",
-			initialState:   StatusRunning,
-			toState:        StatusNew,
-			expectedResult: false,
-			expectedState:  StatusRunning,
+			expectedState:  "state1",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fsm, err := New(nil, tc.initialState, TypicalTransitions)
+			transitions := map[string][]string{
+				"state1": {},
+				"state2": {},
+				"state3": {},
+			}
+			if tc.allowed {
+				transitions[tc.currentState] = []string{tc.targetState}
+			}
+
+			mockDB := newMockTransitionDB(transitions)
+			fsm, err := New(tc.currentState, mockDB)
 			require.NoError(t, err)
 
-			result := fsm.TransitionBool(tc.toState)
+			result := fsm.TransitionBool(tc.targetState)
 			assert.Equal(t, tc.expectedResult, result)
 			assert.Equal(t, tc.expectedState, fsm.GetState())
 		})
 	}
 }
 
-func TestFSM_JSONPersistence(t *testing.T) {
+func TestFSM_TransitionIfCurrentState(t *testing.T) {
 	t.Parallel()
 
-	// Use a discard handler for tests unless specific log output is needed
-	testHandler := slog.NewTextHandler(
-		os.Stdout,
-		&slog.HandlerOptions{Level: slog.LevelError},
-	) // Change to os.Stdout and LevelDebug to see logs
+	t.Run("Transition succeeds when current state matches", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
 
-	t.Run("MarshalJSON", func(t *testing.T) {
-		initialState := StatusRunning
-		fsm, err := New(testHandler, initialState, TypicalTransitions)
+		fsm, err := New("state1", mockDB)
 		require.NoError(t, err)
 
-		// Perform a transition to ensure state changes are captured if needed
-		err = fsm.Transition(StatusReloading)
+		err = fsm.TransitionIfCurrentState("state1", "state2")
 		require.NoError(t, err)
-		currentState := StatusReloading // The state we expect to be marshaled
-
-		jsonData, err := json.Marshal(fsm)
-		require.NoError(t, err)
-
-		// Expected JSON structure: {"state":"StatusReloading"}
-		expectedJSON := `{"state":"` + currentState + `"}`
-		assert.JSONEq(t, expectedJSON, string(jsonData))
+		assert.Equal(t, "state2", fsm.GetState())
 	})
 
-	t.Run("NewFromJSON - Success", func(t *testing.T) {
-		originalState := StatusRunning
-		fsmOrig, err := New(testHandler, StatusNew, TypicalTransitions)
-		require.NoError(t, err)
-		err = fsmOrig.Transition(StatusBooting) // Transition a few times
-		require.NoError(t, err)
-		err = fsmOrig.Transition(originalState)
+	t.Run("Transition fails when current state does not match", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {"state3"},
+			"state3": {},
+		})
+
+		fsm, err := New("state1", mockDB)
 		require.NoError(t, err)
 
-		// Marshal the original FSM
-		jsonData, err := json.Marshal(fsmOrig)
-		require.NoError(t, err)
-
-		// Restore using NewFromJSON
-		fsmRestored, err := NewFromJSON(testHandler, jsonData, TypicalTransitions)
-		require.NoError(t, err)
-		require.NotNil(t, fsmRestored)
-
-		// Verify the state of the restored FSM
-		assert.Equal(t, originalState, fsmRestored.GetState())
-
-		// Optional: Verify transitions still work on the restored machine
-		err = fsmRestored.Transition(StatusReloading)
-		require.NoError(t, err)
-		assert.Equal(t, StatusReloading, fsmRestored.GetState())
+		err = fsm.TransitionIfCurrentState("state2", "state3")
+		require.ErrorIs(t, err, ErrCurrentStateIncorrect)
+		assert.Equal(t, "state1", fsm.GetState()) // State should not change
 	})
 
-	t.Run("NewFromJSON - Invalid JSON Data", func(t *testing.T) {
-		invalidJSON := []byte(`{"state":`) // Malformed JSON
+	t.Run("Transition fails when transition is invalid", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
 
-		fsmRestored, err := NewFromJSON(testHandler, invalidJSON, TypicalTransitions)
-		require.Error(t, err)
-		assert.Nil(t, fsmRestored)
-		// Check if the error is related to JSON unmarshaling (it should be)
-		assert.Contains(t, err.Error(), "failed to unmarshal FSM JSON data")
-	})
-
-	t.Run("NewFromJSON - Unknown State in JSON", func(t *testing.T) {
-		unknownStateJSON := []byte(
-			`{"state":"StatusUnknown"}`,
-		) // Assume StatusUnknown is not in TypicalTransitions
-
-		fsmRestored, err := NewFromJSON(testHandler, unknownStateJSON, TypicalTransitions)
-		require.Error(t, err)
-		assert.Nil(t, fsmRestored)
-		// NewFromJSON calls New, which validates the initial state.
-		// Expect ErrInvalidState wrapped in the NewFromJSON error message.
-		require.ErrorIs(t, err, ErrInvalidState)
-		assert.Contains(
-			t,
-			err.Error(),
-			"failed to initialize FSM with restored state 'StatusUnknown'",
-		)
-	})
-
-	t.Run("NewFromJSON - Nil Transitions Config", func(t *testing.T) {
-		// Marshal a valid state first
-		fsmOrig, err := New(testHandler, StatusNew, TypicalTransitions)
-		require.NoError(t, err)
-		jsonData, err := json.Marshal(fsmOrig)
+		fsm, err := New("state1", mockDB)
 		require.NoError(t, err)
 
-		// Attempt to restore with nil transitions
-		fsmRestored, err := NewFromJSON(testHandler, jsonData, nil)
-		require.Error(t, err)
-		assert.Nil(t, fsmRestored)
-		// NewFromJSON calls New, which returns ErrAvailableStateData for nil transitions.
-		require.ErrorIs(t, err, ErrAvailableStateData)
-		assert.Contains(
-			t,
-			err.Error(),
-			"failed to initialize FSM with restored state",
-		) // Check wrapping
-	})
-
-	t.Run("NewFromJSON - Empty JSON Data", func(t *testing.T) {
-		emptyJSON := []byte(`{}`) // Valid JSON, but missing "state" field
-
-		fsmRestored, err := NewFromJSON(testHandler, emptyJSON, TypicalTransitions)
-		// The unmarshal step will succeed, but pState.State will be "" (empty string)
-		// The subsequent call to New("", TypicalTransitions) should fail validation.
-		require.Error(t, err)
-		assert.Nil(t, fsmRestored)
-		require.ErrorIs(t, err, ErrInvalidState) // New should return ErrInvalidState for ""
-		assert.Contains(t, err.Error(), "failed to initialize FSM with restored state ''")
+		// state1 is correct, but transition to state3 is not allowed
+		err = fsm.TransitionIfCurrentState("state1", "state3")
+		require.ErrorIs(t, err, ErrInvalidStateTransition)
+		assert.Equal(t, "state1", fsm.GetState())
 	})
 }
 
-func TestFSM_GetAllStates(t *testing.T) {
+func TestFSM_JSONPersistence(t *testing.T) {
 	t.Parallel()
 
-	t.Run("GetAllStates with TypicalTransitions", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, TypicalTransitions)
-		require.NoError(t, err)
+	testHandler := slog.NewTextHandler(
+		os.Stdout,
+		&slog.HandlerOptions{Level: slog.LevelError},
+	)
 
-		states := fsm.GetAllStates()
-
-		expectedStates := []string{
-			StatusNew, StatusBooting, StatusRunning, StatusReloading,
-			StatusStopping, StatusStopped, StatusError, StatusUnknown,
-		}
-
-		assert.ElementsMatch(t, expectedStates, states)
-		assert.Len(t, states, len(expectedStates))
+	mockDB := newMockTransitionDB(map[string][]string{
+		"running":   {"stopped"},
+		"stopped":   {},
+		"reloading": {"running"},
 	})
 
-	t.Run("GetAllStates with custom transitions", func(t *testing.T) {
-		customTransitions := TransitionsConfig{
-			"StateA": {"StateB", "StateC"},
-			"StateB": {"StateC"},
-			"StateC": {"StateA"},
-		}
+	fsm, err := New("running", mockDB, WithLogHandler(testHandler))
+	require.NoError(t, err)
 
-		fsm, err := New(nil, "StateA", customTransitions)
+	jsonData, err := json.Marshal(fsm)
+	require.NoError(t, err)
+
+	expectedJSON := `{"state":"running"}`
+	assert.JSONEq(t, expectedJSON, string(jsonData))
+}
+
+func TestFSM_Concurrency(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Concurrent reads are safe", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+
+		fsm, err := New("state1", mockDB)
 		require.NoError(t, err)
 
-		states := fsm.GetAllStates()
-		expectedStates := []string{"StateA", "StateB", "StateC"}
-
-		assert.ElementsMatch(t, expectedStates, states)
-		assert.Len(t, states, 3)
+		var wg sync.WaitGroup
+		for i := 0; i < 100; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = fsm.GetState()
+			}()
+		}
+		wg.Wait()
 	})
 
-	t.Run("GetAllStates with single state", func(t *testing.T) {
-		singleStateTransitions := TransitionsConfig{
-			"OnlyState": {},
-		}
+	t.Run("Concurrent writes are safe", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {"state1"},
+		})
 
-		fsm, err := New(nil, "OnlyState", singleStateTransitions)
+		fsm, err := New("state1", mockDB)
 		require.NoError(t, err)
 
-		states := fsm.GetAllStates()
-		expectedStates := []string{"OnlyState"}
+		var wg sync.WaitGroup
+		for i := 0; i < 50; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// Error intentionally ignored - testing concurrent safety not success
+				//nolint:errcheck
+				_ = fsm.Transition("state2")
+			}()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// Error intentionally ignored - testing concurrent safety not success
+				//nolint:errcheck
+				_ = fsm.Transition("state1")
+			}()
+		}
+		wg.Wait()
 
-		assert.ElementsMatch(t, expectedStates, states)
-		assert.Len(t, states, 1)
+		// Final state should be either state1 or state2
+		finalState := fsm.GetState()
+		assert.Contains(t, []string{"state1", "state2"}, finalState)
+	})
+}
+
+func TestFSM_Options(t *testing.T) {
+	t.Parallel()
+
+	t.Run("WithLogger option sets custom logger", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {},
+		})
+
+		logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+		fsm, err := New("state1", mockDB, WithLogger(logger))
+		require.NoError(t, err)
+		require.NotNil(t, fsm)
+		assert.NotNil(t, fsm.logger)
 	})
 
-	t.Run("GetAllStates returns copy not reference", func(t *testing.T) {
-		fsm, err := New(nil, StatusNew, TypicalTransitions)
+	t.Run("WithLogHandler option creates logger from handler", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {},
+		})
+
+		handler := slog.NewTextHandler(os.Stdout, nil)
+		fsm, err := New("state1", mockDB, WithLogHandler(handler))
+		require.NoError(t, err)
+		require.NotNil(t, fsm)
+		assert.NotNil(t, fsm.logger)
+	})
+
+	t.Run("WithCallbackRegistry option sets callback executor", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+		require.NotNil(t, fsm)
+
+		// Verify callbacks are executed
+		err = fsm.Transition("state2")
 		require.NoError(t, err)
 
-		states1 := fsm.GetAllStates()
-		states2 := fsm.GetAllStates()
+		postTransitions := mockCallbacks.getPostTransitions()
+		require.Len(t, postTransitions, 1)
+	})
 
-		assert.ElementsMatch(t, states1, states2)
+	t.Run("Nil logger in WithLogger returns error", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {},
+		})
 
-		// Modify one slice to ensure they're independent
-		states1[0] = "ModifiedState"
-		assert.NotEqual(t, states1[0], states2[0])
+		fsm, err := New("state1", mockDB, WithLogger(nil))
+		require.Error(t, err)
+		assert.Nil(t, fsm)
+	})
+
+	t.Run("Nil handler in WithLogHandler returns error", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {},
+		})
+
+		fsm, err := New("state1", mockDB, WithLogHandler(nil))
+		require.Error(t, err)
+		assert.Nil(t, fsm)
+	})
+}
+
+// TestFSM_TransitionWithContext verifies context flows through to hooks
+func TestFSM_TransitionWithContext(t *testing.T) {
+	t.Parallel()
+
+	type contextKey string
+	const requestIDKey contextKey = "request_id"
+
+	t.Run("Context with values flows to hooks", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+
+		// Create context with a value
+		ctx := context.WithValue(context.Background(), requestIDKey, "req-123")
+
+		err = fsm.TransitionWithContext(ctx, "state2")
+		require.NoError(t, err)
+
+		// Verify hooks received the context
+		receivedContexts := mockCallbacks.getReceivedContexts()
+		require.Len(t, receivedContexts, 2) // pre + post hooks
+
+		// Check pre-transition hook got the context
+		preCtx := receivedContexts[0]
+		assert.Equal(t, "req-123", preCtx.Value(requestIDKey))
+
+		// Check post-transition hook got the context
+		postCtx := receivedContexts[1]
+		assert.Equal(t, "req-123", postCtx.Value(requestIDKey))
+	})
+
+	t.Run("Regular Transition uses Background context", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+
+		err = fsm.Transition("state2")
+		require.NoError(t, err)
+
+		// Verify hooks received context (should be Background)
+		receivedContexts := mockCallbacks.getReceivedContexts()
+		require.Len(t, receivedContexts, 2)
+
+		// Background context has no values
+		preCtx := receivedContexts[0]
+		assert.Nil(t, preCtx.Value(requestIDKey))
+	})
+
+	t.Run("TransitionIfCurrentStateWithContext flows context", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+
+		ctx := context.WithValue(context.Background(), requestIDKey, "req-456")
+
+		err = fsm.TransitionIfCurrentStateWithContext(ctx, "state1", "state2")
+		require.NoError(t, err)
+
+		// Verify context flowed through
+		receivedContexts := mockCallbacks.getReceivedContexts()
+		require.Len(t, receivedContexts, 2)
+		assert.Equal(t, "req-456", receivedContexts[0].Value(requestIDKey))
+		assert.Equal(t, "req-456", receivedContexts[1].Value(requestIDKey))
 	})
 }
