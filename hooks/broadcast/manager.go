@@ -19,6 +19,7 @@ package broadcast
 import (
 	"context"
 	"fmt"
+	"iter"
 	"log/slog"
 	"sync"
 	"time"
@@ -50,17 +51,15 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 		return nil, fmt.Errorf("context cannot be nil")
 	}
 
-	config := &Config{
-		syncTimeout: defaultAsyncTimeout,
-	}
+	config := &Config{}
 
 	for _, opt := range opts {
 		opt(config)
 	}
 
 	var ch chan string
-	if config.customChannel != nil {
-		ch = config.customChannel
+	if config.channel != nil {
+		ch = config.channel
 	} else {
 		ch = make(chan string, 1)
 	}
@@ -74,7 +73,9 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 	go func() {
 		<-ctx.Done()
 		m.unsubscribe(ch)
-		close(ch)
+		if !config.externalChannel {
+			close(ch)
+		}
 	}()
 
 	return ch, nil
@@ -95,10 +96,31 @@ func (m *Manager) unsubscribe(ch chan string) {
 	m.mu.Unlock()
 }
 
+// iterSubscribers returns a sequence of all subscriber channels and their configs.
+func (m *Manager) iterSubscribers() iter.Seq2[chan string, *Config] {
+	return func(yield func(chan string, *Config) bool) {
+		m.subscribers.Range(func(key, value any) bool {
+			ch, ok := key.(chan string)
+			if !ok {
+				return true
+			}
+
+			config, ok := value.(*Config)
+			if !ok {
+				m.logger.Error("Invalid subscriber config type; skipping subscriber")
+				return true
+			}
+
+			return yield(ch, config)
+		})
+	}
+}
+
 // Broadcast sends the state to all subscriber channels.
-// Subscribers with negative timeout block indefinitely until delivered.
-// Subscribers with timeout=0 behave asynchronously (drop messages if channel is full).
-// Subscribers with positive timeout block until delivered or timeout.
+// Delivery behavior depends on subscriber timeout configuration:
+// - timeout = 0 (default): best-effort, drops message if channel is full
+// - timeout > 0: blocks up to timeout duration, then drops
+// - timeout < 0: blocks indefinitely until delivered (guaranteed delivery)
 // The mutex ensures broadcasts are always serial to maintain consistent ordering.
 func (m *Manager) Broadcast(state string) {
 	logger := m.logger.WithGroup("broadcast").With("state", state)
@@ -109,49 +131,37 @@ func (m *Manager) Broadcast(state string) {
 
 	var wg sync.WaitGroup
 
-	m.subscribers.Range(func(key, value any) bool {
-		ch := key.(chan string)
-
-		config, ok := value.(*Config)
-		if !ok {
-			logger.Error("Invalid subscriber config type; skipping subscriber")
-			return true
-		}
-
-		if config.syncTimeout < 0 {
-			// Handle infinite blocking broadcast
-			wg.Add(1)
-			go func(ch chan string) {
-				defer wg.Done()
+	for ch, config := range m.iterSubscribers() {
+		if config.timeout < 0 {
+			// Negative timeout: block indefinitely (guaranteed delivery)
+			wg.Go(func() {
 				ch <- state
-				logger.Debug("State delivered to blocking subscriber")
-			}(ch)
-		} else if config.syncTimeout == 0 {
-			// Handle async broadcast (non-blocking)
-			select {
-			case ch <- state:
-				logger.Debug("State delivered to asynchronous subscriber")
-			default:
-				logger.Debug("Asynchronous subscriber channel full; state delivery skipped",
-					"channel_capacity", cap(ch), "channel_length", len(ch))
-			}
-		} else {
-			// Handle sync broadcast with positive timeout
-			wg.Add(1)
-			go func(ch chan string, timeout time.Duration) {
-				defer wg.Done()
+				logger.Debug("State delivered to guaranteed delivery subscriber")
+			})
+		} else if config.timeout > 0 {
+			// Positive timeout: block up to timeout duration
+			timeout := config.timeout
+			wg.Go(func() {
 				select {
 				case ch <- state:
-					logger.Debug("State delivered to synchronous subscriber")
+					logger.Debug("State delivered to timeout subscriber")
 				case <-time.After(timeout):
-					logger.Warn("Synchronous subscriber blocked; state delivery timed out",
+					logger.Warn("Timeout subscriber blocked; state delivery timed out",
 						"timeout", timeout,
 						"channel_capacity", cap(ch), "channel_length", len(ch))
 				}
-			}(ch, config.syncTimeout)
+			})
+		} else {
+			// Zero timeout: best-effort delivery (non-blocking)
+			select {
+			case ch <- state:
+				logger.Debug("State delivered to best-effort subscriber")
+			default:
+				logger.Debug("Best-effort subscriber channel full; state delivery skipped",
+					"channel_capacity", cap(ch), "channel_length", len(ch))
+			}
 		}
-		return true
-	})
+	}
 
 	wg.Wait()
 }

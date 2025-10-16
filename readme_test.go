@@ -24,18 +24,24 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	// Create a logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// Create a new FSM with initial state and predefined transitions
-	machine, err := New(logger.Handler(), transitions.StatusNew, transitions.TypicalTransitions)
-	require.NoError(t, err)
-
 	// Create standalone broadcast manager
 	broadcastManager := broadcast.NewManager(logger)
 
-	// Manually register broadcast hook
-	if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
-		require.NoError(t, err)
-	}
+	// Create callback registry with broadcast hook
+	registry, err := hooks.NewSynchronousCallbackRegistry(
+		hooks.WithLogger(logger),
+		hooks.WithTransitions(transitions.Typical),
+	)
+	require.NoError(t, err)
+
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+	require.NoError(t, err)
+
+	// Create a new FSM with initial state and predefined transitions
+	machine, err := New(logger.Handler(), transitions.StatusNew, transitions.Typical,
+		WithCallbackRegistry(registry),
+	)
+	require.NoError(t, err)
 
 	// Subscribe to state changes
 	ctx, cancel := context.WithCancel(t.Context())
@@ -236,17 +242,23 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Basic state change notifications example", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
-		require.NoError(t, err)
-
 		// Create standalone broadcast manager
 		broadcastManager := broadcast.NewManager(slog.Default())
 
-		// Manually register broadcast hook
-		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
-			require.NoError(t, err)
-		}
+		// Create callback registry with broadcast hook
+		registry, err := hooks.NewSynchronousCallbackRegistry(
+			hooks.WithLogger(slog.Default()),
+			hooks.WithTransitions(transitions.Typical),
+		)
+		require.NoError(t, err)
+
+		err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+		require.NoError(t, err)
+
+		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.Typical,
+			WithCallbackRegistry(registry),
+		)
+		require.NoError(t, err)
 
 		// Get notification channel with default async behavior (timeout=0)
 		ctx, cancel := context.WithCancel(t.Context())
@@ -293,178 +305,68 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 func TestReadme_BroadcastModes(t *testing.T) {
 	t.Parallel()
 
-	t.Run("Async mode (timeout=0) - default behavior", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
-		require.NoError(t, err)
+	testCases := []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{"Async mode (timeout=0) - default behavior", 0},
+		{"10s timeout", 10 * time.Second},
+		{"1hr custom timeout", 1 * time.Hour},
+		{"Infinite blocking (negative timeout)", -1 * time.Second},
+	}
 
-		// Create standalone broadcast manager
-		broadcastManager := broadcast.NewManager(slog.Default())
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create standalone broadcast manager
+			broadcastManager := broadcast.NewManager(slog.Default())
 
-		// Manually register broadcast hook
-		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+			// Create callback registry with broadcast hook
+			registry, err := hooks.NewSynchronousCallbackRegistry(
+				hooks.WithLogger(slog.Default()),
+				hooks.WithTransitions(transitions.Typical),
+			)
 			require.NoError(t, err)
-		}
 
-		// Get notification channel with default async behavior (timeout=0)
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-
-		stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
-		require.NoError(t, err)
-
-		// Send initial state
-		broadcastManager.Broadcast(machine.GetState())
-
-		var receivedStates []string
-		var wg sync.WaitGroup
-
-		// Process state changes
-		wg.Go(func() {
-			for state := range stateChan {
-				receivedStates = append(receivedStates, state)
-			}
-		})
-
-		// Perform transition
-		err = machine.Transition(transitions.StatusBooting)
-		require.NoError(t, err)
-
-		cancel()
-		wg.Wait()
-
-		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
-		assert.Equal(t, expectedStates, receivedStates)
-	})
-
-	t.Run("Use sync broadcast with 10s timeout (WithSyncBroadcast)", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
-		require.NoError(t, err)
-
-		// Create standalone broadcast manager
-		broadcastManager := broadcast.NewManager(slog.Default())
-
-		// Manually register broadcast hook
-		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+			err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 			require.NoError(t, err)
-		}
 
-		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-		defer cancel()
-
-		// Use sync broadcast with a 10s timeout (WithSyncBroadcast is a shortcut for settings a 10s timeout)
-		syncChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithSyncBroadcast())
-		require.NoError(t, err)
-
-		// Send initial state
-		broadcastManager.Broadcast(machine.GetState())
-
-		var receivedStates []string
-		var wg sync.WaitGroup
-
-		// Read and print all state changes from the channel (replicating README example)
-		wg.Go(func() {
-			for state := range syncChan {
-				// fmt.Println("State:", state) - commented out to avoid test output pollution
-				receivedStates = append(receivedStates, state)
-			}
-		})
-
-		// Perform transition
-		err = machine.Transition(transitions.StatusBooting)
-		require.NoError(t, err)
-
-		cancel()
-		wg.Wait()
-
-		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
-		assert.Equal(t, expectedStates, receivedStates)
-	})
-
-	t.Run("Use sync broadcast with 1hr custom timeout", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
-		require.NoError(t, err)
-
-		// Create standalone broadcast manager
-		broadcastManager := broadcast.NewManager(slog.Default())
-
-		// Manually register broadcast hook
-		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+			machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.Typical,
+				WithCallbackRegistry(registry),
+			)
 			require.NoError(t, err)
-		}
 
-		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-		defer cancel()
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+			defer cancel()
 
-		// Use sync broadcast with 1hr custom timeout
-		timeoutChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithSyncTimeout(1*time.Hour))
-		require.NoError(t, err)
-
-		// Send initial state
-		broadcastManager.Broadcast(machine.GetState())
-
-		var receivedStates []string
-		var wg sync.WaitGroup
-
-		wg.Go(func() {
-			for state := range timeoutChan {
-				receivedStates = append(receivedStates, state)
+			var stateChan <-chan string
+			if tc.timeout == 0 {
+				stateChan, err = broadcastManager.GetStateChan(ctx, broadcast.WithBufferSize(10))
+			} else {
+				stateChan, err = broadcastManager.GetStateChan(ctx, broadcast.WithTimeout(tc.timeout))
 			}
-		})
-
-		// Perform transition
-		err = machine.Transition(transitions.StatusBooting)
-		require.NoError(t, err)
-
-		cancel()
-		wg.Wait()
-
-		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
-		assert.Equal(t, expectedStates, receivedStates)
-	})
-
-	t.Run("Use infinite blocking (never times out)", func(t *testing.T) {
-		machine, err := New(slog.Default().Handler(), transitions.StatusNew, transitions.TypicalTransitions)
-		require.NoError(t, err)
-
-		// Create standalone broadcast manager
-		broadcastManager := broadcast.NewManager(slog.Default())
-
-		// Manually register broadcast hook
-		if reg, ok := machine.callbacks.(*hooks.SynchronousCallbackRegistry); ok {
-			err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
 			require.NoError(t, err)
-		}
 
-		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-		defer cancel()
+			// Send initial state
+			broadcastManager.Broadcast(machine.GetState())
 
-		// Use infinite blocking (never times out)
-		infiniteChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithSyncTimeout(-1))
-		require.NoError(t, err)
+			var receivedStates []string
+			var wg sync.WaitGroup
 
-		// Send initial state
-		broadcastManager.Broadcast(machine.GetState())
+			wg.Go(func() {
+				for state := range stateChan {
+					receivedStates = append(receivedStates, state)
+				}
+			})
 
-		var receivedStates []string
-		var wg sync.WaitGroup
+			// Perform transition
+			err = machine.Transition(transitions.StatusBooting)
+			require.NoError(t, err)
 
-		wg.Go(func() {
-			for state := range infiniteChan {
-				receivedStates = append(receivedStates, state)
-			}
+			cancel()
+			wg.Wait()
+
+			expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
+			assert.Equal(t, expectedStates, receivedStates)
 		})
-
-		// Perform transition
-		err = machine.Transition(transitions.StatusBooting)
-		require.NoError(t, err)
-
-		cancel()
-		wg.Wait()
-
-		expectedStates := []string{transitions.StatusNew, transitions.StatusBooting}
-		assert.Equal(t, expectedStates, receivedStates)
-	})
+	}
 }

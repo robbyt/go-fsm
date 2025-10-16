@@ -180,9 +180,9 @@ func TestBroadcast_SyncMode(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		manager := broadcast.NewManager(newTestLogger())
 
-		// Sync mode with 500ms timeout
+		// Timeout mode with 500ms timeout
 		ch, err := manager.GetStateChan(t.Context(),
-			broadcast.WithSyncTimeout(500*time.Millisecond),
+			broadcast.WithTimeout(500*time.Millisecond),
 			broadcast.WithBufferSize(1),
 		)
 		require.NoError(t, err)
@@ -228,14 +228,14 @@ func TestBroadcast_SyncMode(t *testing.T) {
 	})
 }
 
-func TestBroadcast_SyncMode_Timeout(t *testing.T) {
+func TestBroadcast_TimeoutMode(t *testing.T) {
 	t.Parallel()
 
 	manager := broadcast.NewManager(newTestLogger())
 
-	// Sync mode with short timeout
+	// Timeout mode with short timeout
 	ch, err := manager.GetStateChan(t.Context(),
-		broadcast.WithSyncTimeout(50*time.Millisecond),
+		broadcast.WithTimeout(50*time.Millisecond),
 		broadcast.WithBufferSize(1),
 	)
 	require.NoError(t, err)
@@ -259,15 +259,15 @@ func TestBroadcast_SyncMode_Timeout(t *testing.T) {
 	assert.Less(t, elapsed, 150*time.Millisecond)
 }
 
-func TestBroadcast_InfiniteBlockingMode(t *testing.T) {
+func TestBroadcast_GuaranteedDeliveryMode(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
 		manager := broadcast.NewManager(newTestLogger())
 
-		// Infinite blocking mode (negative timeout)
+		// Guaranteed delivery mode (negative timeout)
 		ch, err := manager.GetStateChan(t.Context(),
-			broadcast.WithSyncTimeout(-1),
+			broadcast.WithTimeout(-1),
 			broadcast.WithBufferSize(1),
 		)
 		require.NoError(t, err)
@@ -323,13 +323,13 @@ func TestBroadcast_MultipleSubscribers(t *testing.T) {
 	ctx := t.Context()
 
 	// Create multiple subscribers with different modes
-	ch1, err := manager.GetStateChan(ctx) // Async
+	ch1, err := manager.GetStateChan(ctx) // Best-effort
 	require.NoError(t, err)
-	ch2, err := manager.GetStateChan(ctx, broadcast.WithSyncBroadcast()) // Sync 10s
+	ch2, err := manager.GetStateChan(ctx, broadcast.WithTimeout(10*time.Second)) // With timeout
 	require.NoError(t, err)
-	ch3, err := manager.GetStateChan(ctx, broadcast.WithBufferSize(10)) // Async big buffer
+	ch3, err := manager.GetStateChan(ctx, broadcast.WithBufferSize(10)) // Best-effort with big buffer
 	require.NoError(t, err)
-	ch4, err := manager.GetStateChan(ctx, broadcast.WithBufferSize(5)) // Async medium buffer
+	ch4, err := manager.GetStateChan(ctx, broadcast.WithBufferSize(5)) // Best-effort with medium buffer
 	require.NoError(t, err)
 
 	// Send initial state
@@ -404,4 +404,72 @@ func TestBroadcast_ContextCancellation(t *testing.T) {
 			return false
 		}
 	}, 100*time.Millisecond, 10*time.Millisecond, "ch2 should receive broadcast")
+}
+
+func TestGetStateChan_CustomChannelNotClosedOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger())
+
+	// Test 1: Default internal channel should be closed when context is cancelled
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	defaultCh, err := manager.GetStateChan(ctx1)
+	require.NoError(t, err)
+
+	manager.Broadcast("StateA")
+	<-defaultCh
+
+	cancel1()
+	assert.Eventually(t, func() bool {
+		_, ok := <-defaultCh
+		return !ok
+	}, 100*time.Millisecond, 10*time.Millisecond, "Default channel should be closed")
+
+	// Test 2: WithBufferSize channel should be closed when context is cancelled
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	bufferedCh, err := manager.GetStateChan(ctx2, broadcast.WithBufferSize(10))
+	require.NoError(t, err)
+	assert.Equal(t, 10, cap(bufferedCh))
+
+	manager.Broadcast("StateB")
+	<-bufferedCh
+
+	cancel2()
+	assert.Eventually(t, func() bool {
+		_, ok := <-bufferedCh
+		return !ok
+	}, 100*time.Millisecond, 10*time.Millisecond, "WithBufferSize channel should be closed")
+
+	// Test 3: WithCustomChannel should NOT be closed when context is cancelled
+	ctx3, cancel3 := context.WithCancel(t.Context())
+	customCh := make(chan string, 1)
+	ch, err := manager.GetStateChan(ctx3, broadcast.WithCustomChannel(customCh))
+	require.NoError(t, err)
+	assert.Equal(t, 1, cap(ch))
+
+	manager.Broadcast("StateC")
+	state := <-ch
+	assert.Equal(t, "StateC", state)
+
+	// Cancel context
+	cancel3()
+
+	// Wait for unsubscribe to complete by verifying broadcasts no longer reach the channel
+	assert.Eventually(t, func() bool {
+		manager.Broadcast("StateD")
+		select {
+		case <-customCh:
+			return false
+		case <-time.After(10 * time.Millisecond):
+			return true
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "Channel should be unsubscribed")
+
+	// Verify custom channel is still open by sending directly to it
+	customCh <- "DirectSend"
+	received := <-customCh
+	assert.Equal(t, "DirectSend", received, "Custom channel should still be open")
+
+	// Clean up: close the custom channel since we own it
+	close(customCh)
 }

@@ -18,45 +18,37 @@ package broadcast
 
 import "time"
 
-const (
-	defaultAsyncTimeout = 0
-	defaultSyncTimeout  = 10 * time.Second
-)
-
 // Option configures subscriber behavior.
 type Option func(*Config)
 
 // Config holds configuration for subscriber channels.
 type Config struct {
-	customChannel chan string
-	syncTimeout   time.Duration
+	channel         chan string
+	externalChannel bool
+	timeout         time.Duration
 }
 
 // WithBufferSize creates a channel with the specified buffer size.
 func WithBufferSize(size int) Option {
 	return func(config *Config) {
-		config.customChannel = make(chan string, size)
+		config.channel = make(chan string, size)
 	}
 }
 
 // WithCustomChannel uses an external channel instead of creating a new one.
 func WithCustomChannel(ch chan string) Option {
 	return func(config *Config) {
-		config.customChannel = ch
+		config.channel = ch
+		config.externalChannel = true
 	}
 }
 
-// WithSyncBroadcast enables synchronous broadcasting that blocks until the message
-// is delivered to the channel, rather than dropping messages for full channels.
-func WithSyncBroadcast() Option {
+// WithTimeout sets a timeout for broadcast delivery.
+// Positive duration: blocks up to the specified duration before dropping the message.
+// Negative duration: blocks indefinitely until delivered (guaranteed delivery).
+// Zero duration (default): best-effort, drops immediately if channel is full.
+func WithTimeout(timeout time.Duration) Option {
 	return func(config *Config) {
-		config.syncTimeout = defaultSyncTimeout
-	}
-}
-
-// WithSyncTimeout sets the timeout for synchronous broadcast operations.
-func WithSyncTimeout(timeout time.Duration) Option {
-	return func(config *Config) {
-		config.syncTimeout = timeout
+		config.timeout = timeout
 	}
 }

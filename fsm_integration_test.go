@@ -23,7 +23,7 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 
 		reg, err := hooks.NewSynchronousCallbackRegistry(
 			hooks.WithLogger(slog.Default()),
-			hooks.WithTransitions(transitions.TypicalTransitions),
+			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
 		err = reg.RegisterPreTransitionHook([]string{transitions.StatusNew}, []string{transitions.StatusBooting}, func(ctx context.Context, from, to string) error {
@@ -36,7 +36,7 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.TypicalTransitions,
+		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 
 		reg, err := hooks.NewSynchronousCallbackRegistry(
 			hooks.WithLogger(slog.Default()),
-			hooks.WithTransitions(transitions.TypicalTransitions),
+			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
 		err = reg.RegisterPreTransitionHook([]string{transitions.StatusNew}, []string{transitions.StatusBooting}, func(ctx context.Context, from, to string) error {
@@ -72,7 +72,7 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.TypicalTransitions,
+		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)
@@ -92,7 +92,7 @@ func TestPostTransitionHookIntegration(t *testing.T) {
 
 		reg, err := hooks.NewSynchronousCallbackRegistry(
 			hooks.WithLogger(slog.Default()),
-			hooks.WithTransitions(transitions.TypicalTransitions),
+			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
 		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
@@ -100,7 +100,7 @@ func TestPostTransitionHookIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.TypicalTransitions,
+		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)
@@ -122,11 +122,11 @@ func TestBroadcastMechanismIntegration(t *testing.T) {
 	t.Run("Broadcast mechanism works with custom registry", func(t *testing.T) {
 		reg, err := hooks.NewSynchronousCallbackRegistry(
 			hooks.WithLogger(slog.Default()),
-			hooks.WithTransitions(transitions.TypicalTransitions),
+			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.TypicalTransitions,
+		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)
@@ -173,7 +173,7 @@ func TestPanicRecoveryIntegration(t *testing.T) {
 	t.Run("Panic in pre-transition hook prevents transition", func(t *testing.T) {
 		reg, err := hooks.NewSynchronousCallbackRegistry(
 			hooks.WithLogger(slog.Default()),
-			hooks.WithTransitions(transitions.TypicalTransitions),
+			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
 		err = reg.RegisterPreTransitionHook([]string{transitions.StatusNew}, []string{transitions.StatusBooting}, func(ctx context.Context, from, to string) error {
@@ -181,7 +181,7 @@ func TestPanicRecoveryIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		machine, err := fsm.New(nil, transitions.StatusNew, transitions.TypicalTransitions,
+		machine, err := fsm.New(nil, transitions.StatusNew, transitions.Typical,
 			fsm.WithCallbackRegistry(reg),
 		)
 		require.NoError(t, err)

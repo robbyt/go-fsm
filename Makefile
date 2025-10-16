@@ -1,6 +1,3 @@
-# Variables
-PACKAGES := $(shell go list ./...)
-
 .PHONY: all
 all: help
 
@@ -16,12 +13,12 @@ help: Makefile
 ## test: Run tests with race detection and coverage
 .PHONY: test
 test:
-	go test -race -cover $(PACKAGES)
+	go test -race -cover ./...
 
 ## coverage: Generate and display coverage report
 .PHONY: coverage
 coverage:
-	go test -coverprofile=coverage.out $(PACKAGES)
+	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 	@echo
 	@echo "To view HTML coverage report, run: go tool cover -html=coverage.out"
@@ -29,7 +26,7 @@ coverage:
 ## bench: Run performance benchmarks
 .PHONY: bench
 bench:
-	go test -run=^$$ -bench=. -benchmem $(PACKAGES)
+	go test -run=^$$ -bench=. -benchmem ./...
 
 ## lint: Run golangci-lint code quality checks
 .PHONY: lint

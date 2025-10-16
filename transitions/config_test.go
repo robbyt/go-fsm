@@ -323,7 +323,7 @@ func TestMarshalJSON(t *testing.T) {
 	})
 
 	t.Run("marshals TypicalTransitions correctly", func(t *testing.T) {
-		jsonData, err := json.Marshal(TypicalTransitions)
+		jsonData, err := json.Marshal(Typical)
 		require.NoError(t, err)
 		require.NotEmpty(t, jsonData)
 
@@ -582,7 +582,7 @@ func TestJSONRoundTrip(t *testing.T) {
 
 	t.Run("round-trip with TypicalTransitions", func(t *testing.T) {
 		// Marshal TypicalTransitions
-		jsonData, err := json.Marshal(TypicalTransitions)
+		jsonData, err := json.Marshal(Typical)
 		require.NoError(t, err)
 
 		// Unmarshal into new instance
@@ -596,6 +596,6 @@ func TestJSONRoundTrip(t *testing.T) {
 		assert.False(t, restored.IsTransitionAllowed(StatusNew, StatusRunning))
 
 		// Verify all states are present
-		assert.ElementsMatch(t, TypicalTransitions.GetAllStates(), restored.GetAllStates())
+		assert.ElementsMatch(t, Typical.GetAllStates(), restored.GetAllStates())
 	})
 }

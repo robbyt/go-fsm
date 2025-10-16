@@ -12,9 +12,9 @@ const (
 	StatusUnknown   = "Unknown"
 )
 
-// TypicalTransitions is a common set of transitions, useful as a guide. Each key is the current
+// Typical is a common set of transitions, useful as a guide. Each key is the current
 // state, and the value is a list of valid next states the FSM can transition to.
-var TypicalTransitions = MustNew(map[string][]string{
+var Typical = MustNew(map[string][]string{
 	StatusNew:       {StatusBooting, StatusError},
 	StatusBooting:   {StatusRunning, StatusError},
 	StatusRunning:   {StatusReloading, StatusStopping, StatusError},

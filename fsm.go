@@ -21,32 +21,19 @@ limitations under the License.
 // Example usage:
 //
 //	logger := slog.Default()
-//	machine, err := fsm.New(logger.Handler(), fsm.StatusNew, fsm.transitions.TypicalTransitions)
+//	machine, err := fsm.NewSimple(logger.Handler(), "new", map[string][]string{
+//	    "new":     {"running"},
+//	    "running": {"stopped"},
+//	    "stopped": {},
+//	})
 //	if err != nil {
 //	    logger.Error("Failed to create FSM", "error", err)
 //	    return
 //	}
 //
-//	err = machine.Transition(fsm.transitions.StatusRunning)
+//	err = machine.Transition("running")
 //	if err != nil {
 //	    logger.Error("Transition failed", "error", err)
-//	}
-//
-// // Persist state
-// jsonData, err := json.Marshal(machine)
-//
-//	if err != nil {
-//	    logger.Error("Failed to marshal FSM state", "error", err)
-//	}
-//
-// // Restore state
-// restoredMachine, err := fsm.NewFromJSON(logger.Handler(), jsonData, fsm.transitions.TypicalTransitions)
-//
-//	if err != nil {
-//	    logger.Error("Failed to restore FSM from JSON", "error", err)
-//	} else {
-//
-//	    logger.Info("Restored FSM state", "state", restoredMachine.GetState())
 //	}
 package fsm
 
@@ -57,9 +44,14 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/robbyt/go-fsm/v2/hooks"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
+
+type transitionDB interface {
+	IsTransitionAllowed(from, to string) bool
+	HasState(state string) bool
+	GetAllStates() []string
+}
 
 // Machine represents a finite state machine that tracks its current state
 // and manages state transitions.
@@ -71,7 +63,7 @@ type Machine struct {
 	// If simplified, replace with `state string` and use mutex.RLock in GetState.
 	state atomic.Value
 	// transitions provides fast lookups for allowed transitions.
-	transitions *transitions.Config
+	transitions transitionDB
 	// logHandler is the underlying structured logging handler.
 	logHandler slog.Handler
 	// logger is the FSM's specific logger instance.
@@ -88,24 +80,25 @@ type persistentState struct {
 }
 
 // New initializes a new finite state machine with the specified initial state and
-// allowed state transitions.
+// allowed state transitions. This is the advanced constructor that accepts a transitionDB interface.
+// For simpler usage with inline maps, see NewSimple().
 //
 // Example usage:
 //
 //	trans := transitions.MustNew(map[string][]string{
-//	    transitions.StatusNew:       {transitions.transitions.StatusBooting, transitions.transitions.StatusError},
-//	    transitions.transitions.StatusBooting:   {transitions.transitions.StatusRunning, transitions.transitions.StatusError},
-//	    transitions.transitions.StatusRunning:   {transitions.transitions.StatusReloading, transitions.transitions.StatusStopping, transitions.transitions.StatusError},
+//	    transitions.StatusNew:     {transitions.StatusBooting, transitions.StatusError},
+//	    transitions.StatusBooting: {transitions.StatusRunning, transitions.StatusError},
+//	    transitions.StatusRunning: {transitions.StatusReloading, transitions.StatusStopping, transitions.StatusError},
 //	})
 //	machine, err := fsm.New(handler, transitions.StatusNew, trans)
 //
-// Or use the provided transitions.TypicalTransitions:
+// Or use the provided transitions.Typical:
 //
-//	machine, err := fsm.New(handler, transitions.StatusNew, transitions.transitions.TypicalTransitions)
+//	machine, err := fsm.New(handler, transitions.StatusNew, transitions.Typical)
 func New(
 	handler slog.Handler,
 	initialState string,
-	trans *transitions.Config,
+	trans transitionDB,
 	opts ...Option,
 ) (*Machine, error) {
 	// Ensure a valid logger handler is provided or use a default.
@@ -129,21 +122,11 @@ func New(
 		)
 	}
 
-	// Create default callback registry with transitions
-	defaultRegistry, err := hooks.NewSynchronousCallbackRegistry(
-		hooks.WithLogger(slog.New(handler)),
-		hooks.WithTransitions(trans),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create default callback registry: %w", err)
-	}
-
 	// Create the machine instance
 	m := &Machine{
 		transitions: trans,
 		logHandler:  handler,
 		logger:      slog.New(handler),
-		callbacks:   defaultRegistry,
 	}
 	m.state.Store(initialState)
 
@@ -157,36 +140,27 @@ func New(
 	return m, nil
 }
 
-// NewFromJSON creates a new finite state machine by unmarshaling JSON data.
-// It requires the logging handler and the original transitions configuration
-// used when the state was marshaled.
-func NewFromJSON(
+// NewSimple creates a new FSM with a map-based transition configuration.
+// This is a convenience wrapper around New() that handles transition validation.
+//
+// Example usage:
+//
+//	machine, err := fsm.NewSimple(handler, "online", map[string][]string{
+//	    "online":  {"offline", "error"},
+//	    "offline": {"online", "error"},
+//	    "error":   {},
+//	})
+func NewSimple(
 	handler slog.Handler,
-	jsonData []byte,
-	trans *transitions.Config,
+	initialState string,
+	allowedTransitions map[string][]string,
 	opts ...Option,
 ) (*Machine, error) {
-	// Unmarshal the JSON data into the temporary persistence struct.
-	var pState persistentState
-	if err := json.Unmarshal(jsonData, &pState); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal FSM JSON data: %w", err)
-	}
-
-	// Create a new FSM instance. New will validate the state against the transitions.
-	// We use the unmarshaled state as the initial state and apply the same options.
-	machine, err := New(handler, pState.State, trans, opts...)
+	trans, err := transitions.New(allowedTransitions)
 	if err != nil {
-		// Wrap the error from New to provide context about JSON restoration failure.
-		return nil, fmt.Errorf(
-			"failed to initialize FSM with restored state '%s': %w",
-			pState.State,
-			err,
-		)
+		return nil, err
 	}
-
-	// The machine is already initialized with the correct state by New.
-	machine.logger.Debug("Successfully restored FSM state from JSON", "state", pState.State)
-	return machine, nil
+	return New(handler, initialState, trans, opts...)
 }
 
 // MarshalJSON implements the json.Marshaler interface.
@@ -228,9 +202,8 @@ func (fsm *Machine) setState(state string) {
 	fsm.state.Store(state)
 }
 
-// SetState updates the FSM's state to the provided state, bypassing the usual transition rules.
-// It only succeeds if the requested state is defined as a valid *from* state
-// in the allowedTransitions configuration.
+// SetState updates the FSM's state to the provided state, skipping the transition rules and pre-transition hooks.
+// This will always succeed, assuming the requested state is actually a valid *from* state.
 func (fsm *Machine) SetState(state string) error {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
@@ -268,14 +241,7 @@ func (fsm *Machine) SetState(state string) error {
 func (fsm *Machine) transition(toState string) error {
 	currentState := fsm.GetState()
 
-	// 1. Validate transition is allowed
-	if !fsm.transitions.HasState(currentState) {
-		return fmt.Errorf(
-			"%w: current state '%s' has no defined transitions",
-			ErrInvalidState,
-			currentState,
-		)
-	}
+	// 1. Validate this transition is allowed by querying the transitionDB
 	if !fsm.transitions.IsTransitionAllowed(currentState, toState) {
 		return fmt.Errorf(
 			"%w: transition from '%s' to '%s' is not allowed",

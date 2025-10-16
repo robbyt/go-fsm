@@ -36,7 +36,7 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 	// Create callback registry
 	registry, err := hooks.NewSynchronousCallbackRegistry(
 		hooks.WithLogger(logger),
-		hooks.WithTransitions(transitions.TypicalTransitions),
+		hooks.WithTransitions(transitions.Typical),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registry: %w", err)
@@ -46,7 +46,7 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 	machine, err := fsm.New(
 		logger.Handler(),
 		transitions.StatusNew,
-		transitions.TypicalTransitions,
+		transitions.Typical,
 		fsm.WithCallbackRegistry(registry),
 	)
 	if err != nil {

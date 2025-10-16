@@ -15,7 +15,7 @@ func TestFSM(t *testing.T) {
 	t.Parallel()
 
 	t.Run("NewFSM with invalid initial status", func(t *testing.T) {
-		fsm, err := New(nil, "bla", transitions.TypicalTransitions)
+		fsm, err := New(nil, "bla", transitions.Typical)
 		assert.Nil(t, fsm)
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrInvalidState) // More specific check
@@ -29,7 +29,7 @@ func TestFSM(t *testing.T) {
 	})
 
 	t.Run("GetState and SetState", func(t *testing.T) {
-		fsm, err := New(nil, transitions.StatusNew, transitions.TypicalTransitions)
+		fsm, err := New(nil, transitions.StatusNew, transitions.Typical)
 		require.NoError(t, err)
 
 		assert.Equal(t, transitions.StatusNew, fsm.GetState())
@@ -77,7 +77,7 @@ func TestFSM(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				fsm, err := New(nil, tc.initialState, transitions.TypicalTransitions)
+				fsm, err := New(nil, tc.initialState, transitions.Typical)
 				require.NoError(t, err)
 
 				err = fsm.Transition(tc.toState)
@@ -130,7 +130,7 @@ func TestFSM(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				fsm, err := New(nil, tc.initialState, transitions.TypicalTransitions)
+				fsm, err := New(nil, tc.initialState, transitions.Typical)
 				require.NoError(t, err)
 
 				err = fsm.TransitionIfCurrentState(tc.fromState, tc.toState)
@@ -150,7 +150,7 @@ func TestFSM(t *testing.T) {
 func TestFSM_Transition_DisallowedStateChange(t *testing.T) {
 	t.Parallel()
 
-	fsm, err := New(nil, transitions.StatusNew, transitions.TypicalTransitions)
+	fsm, err := New(nil, transitions.StatusNew, transitions.Typical)
 	require.NoError(t, err)
 
 	// Attempt transition to a state not allowed from transitions.StatusNew
@@ -273,7 +273,7 @@ func TestFSM_TransitionBool(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fsm, err := New(nil, tc.initialState, transitions.TypicalTransitions)
+			fsm, err := New(nil, tc.initialState, transitions.Typical)
 			require.NoError(t, err)
 
 			result := fsm.TransitionBool(tc.toState)
@@ -286,21 +286,20 @@ func TestFSM_TransitionBool(t *testing.T) {
 func TestFSM_JSONPersistence(t *testing.T) {
 	t.Parallel()
 
-	// Use a discard handler for tests unless specific log output is needed
 	testHandler := slog.NewTextHandler(
 		os.Stdout,
 		&slog.HandlerOptions{Level: slog.LevelError},
-	) // Change to os.Stdout and LevelDebug to see logs
+	)
 
 	t.Run("MarshalJSON", func(t *testing.T) {
 		initialState := transitions.StatusRunning
-		fsm, err := New(testHandler, initialState, transitions.TypicalTransitions)
+		fsm, err := New(testHandler, initialState, transitions.Typical)
 		require.NoError(t, err)
 
-		// Perform a transition to ensure state changes are captured if needed
+		// Perform a transition to ensure state changes are captured
 		err = fsm.Transition(transitions.StatusReloading)
 		require.NoError(t, err)
-		currentState := transitions.StatusReloading // The state we expect to be marshaled
+		currentState := transitions.StatusReloading
 
 		jsonData, err := json.Marshal(fsm)
 		require.NoError(t, err)
@@ -309,100 +308,13 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		expectedJSON := `{"state":"` + currentState + `"}`
 		assert.JSONEq(t, expectedJSON, string(jsonData))
 	})
-
-	t.Run("NewFromJSON - Success", func(t *testing.T) {
-		originalState := transitions.StatusRunning
-		fsmOrig, err := New(testHandler, transitions.StatusNew, transitions.TypicalTransitions)
-		require.NoError(t, err)
-		err = fsmOrig.Transition(transitions.StatusBooting) // Transition a few times
-		require.NoError(t, err)
-		err = fsmOrig.Transition(originalState)
-		require.NoError(t, err)
-
-		// Marshal the original FSM
-		jsonData, err := json.Marshal(fsmOrig)
-		require.NoError(t, err)
-
-		// Restore using NewFromJSON
-		fsmRestored, err := NewFromJSON(testHandler, jsonData, transitions.TypicalTransitions)
-		require.NoError(t, err)
-		require.NotNil(t, fsmRestored)
-
-		// Verify the state of the restored FSM
-		assert.Equal(t, originalState, fsmRestored.GetState())
-
-		// Optional: Verify transitions still work on the restored machine
-		err = fsmRestored.Transition(transitions.StatusReloading)
-		require.NoError(t, err)
-		assert.Equal(t, transitions.StatusReloading, fsmRestored.GetState())
-	})
-
-	t.Run("NewFromJSON - Invalid JSON Data", func(t *testing.T) {
-		invalidJSON := []byte(`{"state":`) // Malformed JSON
-
-		fsmRestored, err := NewFromJSON(testHandler, invalidJSON, transitions.TypicalTransitions)
-		require.Error(t, err)
-		assert.Nil(t, fsmRestored)
-		// Check if the error is related to JSON unmarshaling (it should be)
-		assert.Contains(t, err.Error(), "failed to unmarshal FSM JSON data")
-	})
-
-	t.Run("NewFromJSON - Unknown State in JSON", func(t *testing.T) {
-		unknownStateJSON := []byte(
-			`{"state":"transitions.StatusUnknown"}`,
-		) // Assume transitions.StatusUnknown is not in transitions.TypicalTransitions
-
-		fsmRestored, err := NewFromJSON(testHandler, unknownStateJSON, transitions.TypicalTransitions)
-		require.Error(t, err)
-		assert.Nil(t, fsmRestored)
-		// NewFromJSON calls New, which validates the initial state.
-		// Expect ErrInvalidState wrapped in the NewFromJSON error message.
-		require.ErrorIs(t, err, ErrInvalidState)
-		assert.Contains(
-			t,
-			err.Error(),
-			"failed to initialize FSM with restored state 'transitions.StatusUnknown'",
-		)
-	})
-
-	t.Run("NewFromJSON - Nil Transitions Config", func(t *testing.T) {
-		// Marshal a valid state first
-		fsmOrig, err := New(testHandler, transitions.StatusNew, transitions.TypicalTransitions)
-		require.NoError(t, err)
-		jsonData, err := json.Marshal(fsmOrig)
-		require.NoError(t, err)
-
-		// Attempt to restore with nil transitions
-		fsmRestored, err := NewFromJSON(testHandler, jsonData, nil)
-		require.Error(t, err)
-		assert.Nil(t, fsmRestored)
-		// NewFromJSON calls New, which returns ErrAvailableStateData for nil transitions.
-		require.ErrorIs(t, err, ErrAvailableStateData)
-		assert.Contains(
-			t,
-			err.Error(),
-			"failed to initialize FSM with restored state",
-		) // Check wrapping
-	})
-
-	t.Run("NewFromJSON - Empty JSON Data", func(t *testing.T) {
-		emptyJSON := []byte(`{}`) // Valid JSON, but missing "state" field
-
-		fsmRestored, err := NewFromJSON(testHandler, emptyJSON, transitions.TypicalTransitions)
-		// The unmarshal step will succeed, but pState.State will be "" (empty string)
-		// The subsequent call to New("", transitions.TypicalTransitions) should fail validation.
-		require.Error(t, err)
-		assert.Nil(t, fsmRestored)
-		require.ErrorIs(t, err, ErrInvalidState) // New should return ErrInvalidState for ""
-		assert.Contains(t, err.Error(), "failed to initialize FSM with restored state ''")
-	})
 }
 
 func TestFSM_GetAllStates(t *testing.T) {
 	t.Parallel()
 
 	t.Run("GetAllStates with transitions.TypicalTransitions", func(t *testing.T) {
-		fsm, err := New(nil, transitions.StatusNew, transitions.TypicalTransitions)
+		fsm, err := New(nil, transitions.StatusNew, transitions.Typical)
 		require.NoError(t, err)
 
 		states := fsm.GetAllStates()
@@ -449,7 +361,7 @@ func TestFSM_GetAllStates(t *testing.T) {
 	})
 
 	t.Run("GetAllStates returns copy not reference", func(t *testing.T) {
-		fsm, err := New(nil, transitions.StatusNew, transitions.TypicalTransitions)
+		fsm, err := New(nil, transitions.StatusNew, transitions.Typical)
 		require.NoError(t, err)
 
 		states1 := fsm.GetAllStates()
@@ -460,5 +372,61 @@ func TestFSM_GetAllStates(t *testing.T) {
 		// Modify one slice to ensure they're independent
 		states1[0] = "ModifiedState"
 		assert.NotEqual(t, states1[0], states2[0])
+	})
+}
+
+func TestNewSimple(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Success with valid map", func(t *testing.T) {
+		fsm, err := NewSimple(nil, "online", map[string][]string{
+			"online":  {"offline", "error"},
+			"offline": {"online", "error"},
+			"error":   {},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, fsm)
+		assert.Equal(t, "online", fsm.GetState())
+	})
+
+	t.Run("Success with transitions", func(t *testing.T) {
+		fsm, err := NewSimple(nil, "online", map[string][]string{
+			"online":  {"offline"},
+			"offline": {"online"},
+		})
+		require.NoError(t, err)
+
+		err = fsm.Transition("offline")
+		require.NoError(t, err)
+		assert.Equal(t, "offline", fsm.GetState())
+
+		err = fsm.Transition("online")
+		require.NoError(t, err)
+		assert.Equal(t, "online", fsm.GetState())
+	})
+
+	t.Run("Error with invalid transitions map", func(t *testing.T) {
+		fsm, err := NewSimple(nil, "online", map[string][]string{
+			"online": {"offline"},
+			// "offline" is referenced but not defined as a source state
+		})
+		require.Error(t, err)
+		assert.Nil(t, fsm)
+	})
+
+	t.Run("Error with empty transitions map", func(t *testing.T) {
+		fsm, err := NewSimple(nil, "online", map[string][]string{})
+		require.Error(t, err)
+		assert.Nil(t, fsm)
+	})
+
+	t.Run("Error with invalid initial state", func(t *testing.T) {
+		fsm, err := NewSimple(nil, "invalid", map[string][]string{
+			"online":  {"offline"},
+			"offline": {"online"},
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidState)
+		assert.Nil(t, fsm)
 	})
 }

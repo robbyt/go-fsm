@@ -27,10 +27,8 @@ go get github.com/robbyt/go-fsm/v2
 package main
 
 import (
-	"context"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/robbyt/go-fsm/v2"
 )
@@ -39,45 +37,38 @@ func main() {
 	// Create a logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// Create a new FSM with initial state and predefined transitions
-	machine, err := fsm.New(logger.Handler(), fsm.StatusNew, fsm.transitions.TypicalTransitions)
+	// Create a new FSM with initial state and inline transitions
+	machine, err := fsm.NewSimple(logger.Handler(), "new", map[string][]string{
+		"new":       {"booting", "error"},
+		"booting":   {"running", "error"},
+		"running":   {"stopping", "error"},
+		"stopping":  {"stopped", "error"},
+		"stopped":   {"new", "error"},
+		"error":     {},
+	})
 	if err != nil {
 		logger.Error("failed to create FSM", "error", err)
 		return
 	}
 
-	// Subscribe to state changes
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	
-	stateChan := machine.GetStateChan(ctx)
-	
-	go func() {
-		for state := range stateChan {
-			logger.Info("state changed", "state", state)
-		}
-	}()
-
-	// Perform state transitions- they must follow allowed transitions
-	// booting -> running -> stopping -> stopped
-	if err := machine.Transition(fsm.transitions.StatusBooting); err != nil {
+	// Perform state transitions - they must follow allowed transitions
+	// new -> booting -> running -> stopping -> stopped
+	if err := machine.Transition("booting"); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
 
-	if err := machine.Transition(fsm.transitions.StatusRunning); err != nil {
+	if err := machine.Transition("running"); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
 
-	time.Sleep(time.Second)
-	
-	if err := machine.Transition(fsm.transitions.StatusStopping); err != nil {
+	if err := machine.Transition("stopping"); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
-	
-	if err := machine.Transition(fsm.transitions.StatusStopped); err != nil {
+
+	if err := machine.Transition("stopped"); err != nil {
 		logger.Error("transition failed", "error", err)
 		return
 	}
@@ -89,35 +80,48 @@ func main() {
 ### Defining Custom States and Transitions
 
 ```go
-// Define custom states
-const (
-	StatusOnline  = "StatusOnline"
-	StatusOffline = "StatusOffline"
-	transitions.StatusUnknown = "transitions.StatusUnknown"
-)
+// Simple approach with inline map
+machine, err := fsm.NewSimple(slog.Default().Handler(), "online", map[string][]string{
+	"online":  {"offline", "unknown"},
+	"offline": {"online", "unknown"},
+	"unknown": {},
+})
 
-// Define allowed transitions
-var customTransitions = fsm.TransitionsConfig{
-	StatusOnline:  []string{StatusOffline, transitions.StatusUnknown},
-	StatusOffline: []string{StatusOnline, transitions.StatusUnknown},
-	transitions.StatusUnknown: []string{},
-}
+// Advanced approach with reusable transition config
+customTransitions := transitions.MustNew(map[string][]string{
+	"online":  {"offline", "unknown"},
+	"offline": {"online", "unknown"},
+	"unknown": {},
+})
+machine, err := fsm.New(slog.Default().Handler(), "online", customTransitions)
 ```
 
 ### Creating an FSM
 
 ```go
-// Create with default options
-machine, err := fsm.New(slog.Default().Handler(), StatusOnline, customTransitions)
+// Simple constructor with inline transitions
+machine, err := fsm.NewSimple(slog.Default().Handler(), "online", map[string][]string{
+	"online":  {"offline"},
+	"offline": {"online"},
+})
 if err != nil {
 	// Handle error
 }
 
-// Or with custom logger options
+// Advanced constructor with predefined transitions
+machine, err := fsm.New(slog.Default().Handler(), transitions.StatusNew, transitions.Typical)
+if err != nil {
+	// Handle error
+}
+
+// With custom logger options
 handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 	Level: slog.LevelDebug,
 })
-machine, err := fsm.New(handler, StatusOnline, customTransitions)
+machine, err := fsm.NewSimple(handler, "online", map[string][]string{
+	"online":  {"offline"},
+	"offline": {"online"},
+})
 ```
 
 ### State Transition Callbacks
