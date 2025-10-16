@@ -192,3 +192,240 @@ func TestPanicRecoveryIntegration(t *testing.T) {
 		assert.Equal(t, transitions.StatusNew, machine.GetState())
 	})
 }
+
+// TestBasicFSMWorkflow tests FSM with real transitions.Config but no callbacks.
+// This validates the integration between FSM and the transitions package.
+func TestBasicFSMWorkflow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("FSM with typical transitions workflow", func(t *testing.T) {
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical)
+		require.NoError(t, err)
+		require.NotNil(t, machine)
+
+		assert.Equal(t, transitions.StatusNew, machine.GetState())
+
+		// New -> Booting
+		err = machine.Transition(transitions.StatusBooting)
+		require.NoError(t, err)
+		assert.Equal(t, transitions.StatusBooting, machine.GetState())
+
+		// Booting -> Running
+		err = machine.Transition(transitions.StatusRunning)
+		require.NoError(t, err)
+		assert.Equal(t, transitions.StatusRunning, machine.GetState())
+
+		// Running -> Stopping
+		err = machine.Transition(transitions.StatusStopping)
+		require.NoError(t, err)
+		assert.Equal(t, transitions.StatusStopping, machine.GetState())
+
+		// Stopping -> Stopped
+		err = machine.Transition(transitions.StatusStopped)
+		require.NoError(t, err)
+		assert.Equal(t, transitions.StatusStopped, machine.GetState())
+	})
+
+	t.Run("Invalid transition with real transitions", func(t *testing.T) {
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical)
+		require.NoError(t, err)
+
+		// New -> Running is not allowed (must go through Booting)
+		err = machine.Transition(transitions.StatusRunning)
+		require.ErrorIs(t, err, fsm.ErrInvalidStateTransition)
+		assert.Equal(t, transitions.StatusNew, machine.GetState())
+	})
+
+	t.Run("Terminal state has no outgoing transitions", func(t *testing.T) {
+		smallTransitions := transitions.MustNew(map[string][]string{
+			transitions.StatusNew:   {transitions.StatusError},
+			transitions.StatusError: {}, // Terminal state
+		})
+
+		machine, err := fsm.New(transitions.StatusNew, smallTransitions)
+		require.NoError(t, err)
+
+		err = machine.Transition(transitions.StatusError)
+		require.NoError(t, err)
+		assert.Equal(t, transitions.StatusError, machine.GetState())
+
+		// Cannot transition out of terminal state
+		err = machine.Transition(transitions.StatusNew)
+		require.ErrorIs(t, err, fsm.ErrInvalidStateTransition)
+		assert.Equal(t, transitions.StatusError, machine.GetState())
+	})
+}
+
+// TestGetAllStatesIntegration tests GetAllStates with real transitions.Config.
+func TestGetAllStatesIntegration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("GetAllStates with typical transitions", func(t *testing.T) {
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical)
+		require.NoError(t, err)
+
+		states := machine.GetAllStates()
+
+		expectedStates := []string{
+			transitions.StatusNew,
+			transitions.StatusBooting,
+			transitions.StatusRunning,
+			transitions.StatusReloading,
+			transitions.StatusStopping,
+			transitions.StatusStopped,
+			transitions.StatusError,
+			transitions.StatusUnknown,
+		}
+
+		assert.ElementsMatch(t, expectedStates, states)
+		assert.Len(t, states, len(expectedStates))
+	})
+
+	t.Run("GetAllStates with custom transitions", func(t *testing.T) {
+		customTransitions := transitions.MustNew(map[string][]string{
+			"StateA": {"StateB", "StateC"},
+			"StateB": {"StateC"},
+			"StateC": {"StateA"},
+		})
+
+		machine, err := fsm.New("StateA", customTransitions)
+		require.NoError(t, err)
+
+		states := machine.GetAllStates()
+		expectedStates := []string{"StateA", "StateB", "StateC"}
+
+		assert.ElementsMatch(t, expectedStates, states)
+		assert.Len(t, states, 3)
+	})
+
+	t.Run("GetAllStates with single state", func(t *testing.T) {
+		singleStateTransitions := transitions.MustNew(map[string][]string{
+			"OnlyState": {},
+		})
+
+		machine, err := fsm.New("OnlyState", singleStateTransitions)
+		require.NoError(t, err)
+
+		states := machine.GetAllStates()
+		expectedStates := []string{"OnlyState"}
+
+		assert.ElementsMatch(t, expectedStates, states)
+		assert.Len(t, states, 1)
+	})
+
+	t.Run("GetAllStates returns copy not reference", func(t *testing.T) {
+		machine, err := fsm.New(transitions.StatusNew, transitions.Typical)
+		require.NoError(t, err)
+
+		states1 := machine.GetAllStates()
+		states2 := machine.GetAllStates()
+
+		assert.ElementsMatch(t, states1, states2)
+
+		// Modify one slice to ensure they're independent
+		states1[0] = "ModifiedState"
+		assert.NotEqual(t, states1[0], states2[0])
+	})
+}
+
+// TestNewSimpleIntegration tests the NewSimple constructor with real transitions.
+func TestNewSimpleIntegration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Success with valid map", func(t *testing.T) {
+		machine, err := fsm.NewSimple("online", map[string][]string{
+			"online":  {"offline", "error"},
+			"offline": {"online", "error"},
+			"error":   {},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, machine)
+		assert.Equal(t, "online", machine.GetState())
+	})
+
+	t.Run("Success with transitions", func(t *testing.T) {
+		machine, err := fsm.NewSimple("online", map[string][]string{
+			"online":  {"offline"},
+			"offline": {"online"},
+		})
+		require.NoError(t, err)
+
+		err = machine.Transition("offline")
+		require.NoError(t, err)
+		assert.Equal(t, "offline", machine.GetState())
+
+		err = machine.Transition("online")
+		require.NoError(t, err)
+		assert.Equal(t, "online", machine.GetState())
+	})
+
+	t.Run("Error with invalid transitions map", func(t *testing.T) {
+		machine, err := fsm.NewSimple("online", map[string][]string{
+			"online": {"offline"},
+			// "offline" is referenced but not defined as a source state
+		})
+		require.Error(t, err)
+		assert.Nil(t, machine)
+	})
+
+	t.Run("Error with empty transitions map", func(t *testing.T) {
+		machine, err := fsm.NewSimple("online", map[string][]string{})
+		require.Error(t, err)
+		assert.Nil(t, machine)
+	})
+
+	t.Run("Error with invalid initial state", func(t *testing.T) {
+		machine, err := fsm.NewSimple("invalid", map[string][]string{
+			"online":  {"offline"},
+			"offline": {"online"},
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, fsm.ErrInvalidState)
+		assert.Nil(t, machine)
+	})
+}
+
+// TestConcurrentTransitionsIntegration tests concurrent state transitions with real transitions.
+func TestConcurrentTransitionsIntegration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Sequential state transitions under concurrent load", func(t *testing.T) {
+		const (
+			StateA = "StateA"
+			StateB = "StateB"
+			StateC = "StateC"
+			StateD = "StateD"
+			StateE = "StateE"
+			StateF = "StateF"
+			StateG = "StateG"
+		)
+
+		trans := transitions.MustNew(map[string][]string{
+			StateA: {StateB},
+			StateB: {StateC},
+			StateC: {StateD},
+			StateD: {StateE},
+			StateE: {StateF},
+			StateF: {StateG},
+			StateG: {StateA},
+		})
+
+		machine, err := fsm.New(StateA, trans)
+		require.NoError(t, err)
+
+		assert.Equal(t, StateA, machine.GetState())
+
+		// Perform a series of transitions
+		stateSequence := []string{StateB, StateC, StateD, StateE, StateF, StateG}
+		for _, state := range stateSequence {
+			err := machine.Transition(state)
+			require.NoError(t, err)
+			assert.Equal(t, state, machine.GetState())
+		}
+
+		// Final transition back to StateA
+		err = machine.Transition(StateA)
+		require.NoError(t, err)
+		assert.Equal(t, StateA, machine.GetState())
+	})
+}
