@@ -91,9 +91,8 @@ func (t *Config) HasState(state string) bool {
 	return ok
 }
 
-// GetAllStates returns all unique states defined in the transitions configuration.
-// This includes both source states and target states.
-// The returned slice is sorted alphabetically for deterministic output.
+// GetAllStates returns all source/target states defined in the transitions configuration, and
+// returns an alphabetically sorted slice.
 func (t *Config) GetAllStates() []string {
 	stateSet := make(map[string]struct{})
 
