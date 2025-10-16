@@ -31,7 +31,7 @@ func WithLogHandler(handler slog.Handler) Option {
 }
 
 // WithTransitions sets the state transition table for pattern validation and expansion.
-func WithTransitions(trans stateRegistry) Option {
+func WithTransitions(trans transitionDB) Option {
 	return func(r *Registry) error {
 		if trans == nil {
 			return fmt.Errorf("transitions cannot be nil")

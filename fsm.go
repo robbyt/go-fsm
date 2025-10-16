@@ -46,9 +46,9 @@ import (
 )
 
 type transitionDB interface {
-	IsTransitionAllowed(from, to string) bool
 	HasState(state string) bool
 	GetAllStates() []string
+	IsTransitionAllowed(from, to string) bool
 }
 
 // Machine represents a finite state machine that tracks its current state

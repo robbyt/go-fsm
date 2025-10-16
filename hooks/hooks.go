@@ -24,9 +24,9 @@ import (
 	"sync"
 )
 
-// stateRegistry provides state lookup and enumeration.
+// transitionDB provides state lookup and enumeration.
 // This interface is satisfied by transitions.Config.
-type stateRegistry interface {
+type transitionDB interface {
 	HasState(state string) bool
 	GetAllStates() []string
 }
@@ -61,7 +61,7 @@ type transitionKey struct {
 type Registry struct {
 	mu                 sync.RWMutex
 	logger             *slog.Logger
-	transitions        stateRegistry
+	transitions        transitionDB
 	preTransitionHooks map[transitionKey][]CallbackFunc
 	postTransition     map[transitionKey][]ActionFunc
 }
