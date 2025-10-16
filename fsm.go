@@ -224,6 +224,44 @@ func (fsm *Machine) SetState(state string) error {
 	return nil
 }
 
+// Transition changes the FSM's state to toState. It ensures that the transition adheres to the
+// allowed transitions defined during initialization. Returns ErrInvalidState if the current state
+// is somehow invalid or ErrInvalidStateTransition if the transition is not allowed.
+func (fsm *Machine) Transition(toState string) error {
+	fsm.mutex.Lock()
+	defer fsm.mutex.Unlock()
+	return fsm.transition(toState)
+}
+
+// TransitionBool is similar to Transition, but returns a boolean indicating whether the transition
+// was successful. It suppresses the specific error reason.
+func (fsm *Machine) TransitionBool(toState string) bool {
+	fsm.mutex.Lock()
+	defer fsm.mutex.Unlock()
+	return fsm.transition(toState) == nil
+}
+
+// TransitionIfCurrentState changes the FSM's state to toState only if the current state matches
+// fromState. This returns an error if the current state does not match or if the transition is
+// not allowed from fromState to toState.
+func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
+	fsm.mutex.Lock()
+	defer fsm.mutex.Unlock()
+
+	currentState := fsm.GetState()
+	if currentState != fromState {
+		return fmt.Errorf(
+			"%w: current state is '%s', expected '%s' for transition to '%s'",
+			ErrCurrentStateIncorrect,
+			currentState,
+			fromState,
+			toState,
+		)
+	}
+
+	return fsm.transition(toState)
+}
+
 // transition attempts to change the FSM's state from the current state to toState.
 // It returns an error if the transition is invalid according to the configured rules.
 // Assumes the caller holds the write lock (fsm.mutex).
@@ -262,42 +300,4 @@ func (fsm *Machine) transition(toState string) error {
 	}
 
 	return nil
-}
-
-// Transition changes the FSM's state to toState. It ensures that the transition adheres to the
-// allowed transitions defined during initialization. Returns ErrInvalidState if the current state
-// is somehow invalid or ErrInvalidStateTransition if the transition is not allowed.
-func (fsm *Machine) Transition(toState string) error {
-	fsm.mutex.Lock()
-	defer fsm.mutex.Unlock()
-	return fsm.transition(toState)
-}
-
-// TransitionBool is similar to Transition, but returns a boolean indicating whether the transition
-// was successful. It suppresses the specific error reason.
-func (fsm *Machine) TransitionBool(toState string) bool {
-	fsm.mutex.Lock()
-	defer fsm.mutex.Unlock()
-	return fsm.transition(toState) == nil
-}
-
-// TransitionIfCurrentState changes the FSM's state to toState only if the current state matches
-// fromState. This returns an error if the current state does not match or if the transition is
-// not allowed from fromState to toState.
-func (fsm *Machine) TransitionIfCurrentState(fromState, toState string) error {
-	fsm.mutex.Lock()
-	defer fsm.mutex.Unlock()
-
-	currentState := fsm.GetState()
-	if currentState != fromState {
-		return fmt.Errorf(
-			"%w: current state is '%s', expected '%s' for transition to '%s'",
-			ErrCurrentStateIncorrect,
-			currentState,
-			fromState,
-			toState,
-		)
-	}
-
-	return fsm.transition(toState)
 }

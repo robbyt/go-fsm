@@ -90,7 +90,7 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 func (m *Manager) Broadcast(state string) {
 	logger := slog.New(m.logger.WithGroup("broadcast")).With("state", state)
 
-	// Lock during the entire broadcast to prevent race conditions
+	// Lock during the entire broadcast
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -133,10 +133,8 @@ func (m *Manager) Broadcast(state string) {
 
 // BroadcastHook returns a function compatible with hooks.ActionFunc signature.
 // This can be passed directly to RegisterPostTransitionHook without manual wrapping.
-func (m *Manager) BroadcastHook() func(ctx context.Context, from, to string) {
-	return func(ctx context.Context, from, to string) {
-		m.Broadcast(to)
-	}
+func (m *Manager) BroadcastHook(_ context.Context, _, to string) {
+	m.Broadcast(to)
 }
 
 // unsubscribe removes a channel from receiving broadcasts.

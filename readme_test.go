@@ -34,7 +34,7 @@ func TestReadme_QuickStartExample(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
 	require.NoError(t, err)
 
 	// Create a new FSM with initial state and predefined transitions
@@ -253,7 +253,7 @@ func TestReadme_StateChangeNotifications(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+		err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
 		require.NoError(t, err)
 
 		machine, err := New(transitions.StatusNew, transitions.Typical,
@@ -328,7 +328,7 @@ func TestReadme_BroadcastModes(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+			err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
 			require.NoError(t, err)
 
 			machine, err := New(transitions.StatusNew, transitions.Typical,

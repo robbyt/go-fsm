@@ -57,7 +57,7 @@ func run(parentCtx context.Context, logger *slog.Logger, output io.Writer) (*fsm
 	broadcastManager := broadcast.NewManager(logger.Handler())
 
 	// Register broadcast hook to enable state change notifications
-	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook())
+	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register broadcast hook: %w", err)
 	}

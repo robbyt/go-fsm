@@ -27,10 +27,10 @@ manager := broadcast.NewManager(machine.Handler())
 
 // Register as post-transition hook for all state changes
 registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"},
-	manager.BroadcastHook())
+	manager.BroadcastHook)
 ```
 
-The `BroadcastHook()` method returns a function compatible with `hooks.ActionFunc`, making it easy to register without manual wrapping.
+The `BroadcastHook` method is compatible with `hooks.ActionFunc`, making it easy to register.
 
 ## Subscribing to State Changes
 
