@@ -54,6 +54,13 @@ func TestExecutePreTransitionHooks(t *testing.T) {
 	})
 }
 
+func TestTransitionKeyString(t *testing.T) {
+	t.Parallel()
+
+	k := transitionKey{from: "A", to: "B"}
+	assert.Equal(t, "A->B", k.String(), "transitionKey.String should join from and to with '->'")
+}
+
 func TestExecutePostTransitionHooks(t *testing.T) {
 	t.Parallel()
 
@@ -100,6 +107,71 @@ func TestExecutePostTransitionHooks(t *testing.T) {
 
 		reg.ExecutePostTransitionHooks(context.Background(), "New", "Booting")
 		assert.Equal(t, []int{1, 2}, order)
+	})
+
+	t.Run("Wildcard hooks execute in FIFO order with concrete hooks", func(t *testing.T) {
+		trans := transitions.MustNew(map[string][]string{
+			"StatusNew":     {"StatusBooting", "StatusError"},
+			"StatusBooting": {"StatusRunning"},
+			"StatusRunning": {},
+			"StatusError":   {},
+		})
+
+		var order []string
+		reg, err := NewRegistry(
+			WithLogger(slog.Default()),
+			WithTransitions(trans),
+		)
+		require.NoError(t, err)
+
+		// Register concrete hook first
+		err = reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name: "test-post-concrete",
+			From: []string{"StatusNew"},
+			To:   []string{"StatusBooting"},
+			Action: func(ctx context.Context, from, to string) {
+				order = append(order, "concrete")
+			},
+		})
+		require.NoError(t, err)
+
+		// Register wildcard hook second (but should execute in FIFO order)
+		err = reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name: "test-post-wildcard",
+			From: []string{WildcardStatePattern},
+			To:   []string{"StatusBooting"},
+			Action: func(ctx context.Context, from, to string) {
+				order = append(order, "wildcard")
+			},
+		})
+		require.NoError(t, err)
+
+		// Execute for StatusNew -> StatusBooting (both should match)
+		reg.ExecutePostTransitionHooks(context.Background(), "StatusNew", "StatusBooting")
+		assert.Equal(t, []string{"concrete", "wildcard"}, order)
+
+		// Execute for StatusError -> StatusBooting (only wildcard should match)
+		order = nil
+		reg.ExecutePostTransitionHooks(context.Background(), "StatusError", "StatusBooting")
+		assert.Equal(t, []string{"wildcard"}, order)
+	})
+
+	t.Run("No hooks execute when none match", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name: "test-post-no-match",
+			From: []string{"StateA"},
+			To:   []string{"StateB"},
+			Action: func(ctx context.Context, from, to string) {
+				t.Fatal("This hook should not execute")
+			},
+		})
+		require.NoError(t, err)
+
+		// Should not panic or execute the hook
+		reg.ExecutePostTransitionHooks(context.Background(), "StateC", "StateD")
 	})
 }
 
@@ -457,6 +529,135 @@ func TestPatternExpansion(t *testing.T) {
 		err = reg.ExecutePreTransitionHooks(context.Background(), "StatusNew", "StatusError")
 		require.NoError(t, err)
 		assert.Empty(t, executed)
+	})
+
+	t.Run("RemoveHook returns error for non-existent hook", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		err = reg.RemoveHook("non-existent-hook")
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrHookNotFound)
+		assert.Contains(t, err.Error(), "non-existent-hook")
+	})
+
+	t.Run("RemoveHook removes post-transition hooks", func(t *testing.T) {
+		var executed bool
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		// Register post-transition hook
+		err = reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name: "test-post-remove",
+			From: []string{"StateA"},
+			To:   []string{"StateB"},
+			Action: func(ctx context.Context, from, to string) {
+				executed = true
+			},
+		})
+		require.NoError(t, err)
+
+		// Verify it executes
+		reg.ExecutePostTransitionHooks(context.Background(), "StateA", "StateB")
+		assert.True(t, executed)
+
+		// Remove the hook
+		err = reg.RemoveHook("test-post-remove")
+		require.NoError(t, err)
+
+		// Verify it no longer executes
+		executed = false
+		reg.ExecutePostTransitionHooks(context.Background(), "StateA", "StateB")
+		assert.False(t, executed)
+	})
+
+	t.Run("RemoveHook removes post-transition wildcard hooks", func(t *testing.T) {
+		trans := transitions.MustNew(map[string][]string{
+			"StateA": {"StateB"},
+			"StateB": {},
+		})
+
+		var executed bool
+		reg, err := NewRegistry(
+			WithLogger(slog.Default()),
+			WithTransitions(trans),
+		)
+		require.NoError(t, err)
+
+		// Register wildcard post-transition hook
+		err = reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name: "test-post-wildcard-remove",
+			From: []string{"*"},
+			To:   []string{"StateB"},
+			Action: func(ctx context.Context, from, to string) {
+				executed = true
+			},
+		})
+		require.NoError(t, err)
+
+		// Verify it executes
+		reg.ExecutePostTransitionHooks(context.Background(), "StateA", "StateB")
+		assert.True(t, executed)
+
+		// Remove the hook
+		err = reg.RemoveHook("test-post-wildcard-remove")
+		require.NoError(t, err)
+
+		// Verify it no longer executes
+		executed = false
+		reg.ExecutePostTransitionHooks(context.Background(), "StateA", "StateB")
+		assert.False(t, executed)
+	})
+
+	t.Run("RemoveHook removes hook from all index keys", func(t *testing.T) {
+		var executed int
+		reg, err := NewRegistry(WithLogger(slog.Default()))
+		require.NoError(t, err)
+
+		// Register hook with multiple from and to states (Cartesian product)
+		err = reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "test-multi-key-remove",
+			From: []string{"StateA", "StateB"},
+			To:   []string{"StateC", "StateD"},
+			Guard: func(ctx context.Context, from, to string) error {
+				executed++
+				return nil
+			},
+		})
+		require.NoError(t, err)
+
+		// Verify it executes for all combinations
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StateA", "StateC")
+		require.NoError(t, err)
+		assert.Equal(t, 1, executed)
+
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StateA", "StateD")
+		require.NoError(t, err)
+		assert.Equal(t, 2, executed)
+
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StateB", "StateC")
+		require.NoError(t, err)
+		assert.Equal(t, 3, executed)
+
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StateB", "StateD")
+		require.NoError(t, err)
+		assert.Equal(t, 4, executed)
+
+		// Remove the hook
+		err = reg.RemoveHook("test-multi-key-remove")
+		require.NoError(t, err)
+
+		// Verify it no longer executes for any combination
+		executed = 0
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StateA", "StateC")
+		require.NoError(t, err)
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StateA", "StateD")
+		require.NoError(t, err)
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StateB", "StateC")
+		require.NoError(t, err)
+		err = reg.ExecutePreTransitionHooks(context.Background(), "StateB", "StateD")
+		require.NoError(t, err)
+		assert.Equal(t, 0, executed)
 	})
 }
 
