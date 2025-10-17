@@ -44,8 +44,10 @@ type transitionKey struct {
 	to   string
 }
 
-// hookMetadata stores the original registration information.
-type hookMetadata struct {
+// hookEntry stores a registered hook with its function and metadata.
+type hookEntry struct {
+	guard      GuardFunc
+	action     ActionFunc
 	fromStates []string
 	toStates   []string
 	hookType   HookType
@@ -54,25 +56,21 @@ type hookMetadata struct {
 // Registry executes hooks synchronously in FIFO order.
 // It handles panic recovery and error wrapping for all hook executions.
 type Registry struct {
-	mu                  sync.RWMutex
-	logger              *slog.Logger
-	transitions         transitionDB
-	preTransitionHooks  map[transitionKey][]string
-	postTransitionHooks map[transitionKey][]string
-	preHooks            map[string]GuardFunc
-	postHooks           map[string]ActionFunc
-	metadata            map[string]hookMetadata
+	mu                       sync.RWMutex
+	logger                   *slog.Logger
+	transitions              transitionDB
+	preTransitionHooksIndex  map[transitionKey][]*hookEntry
+	postTransitionHooksIndex map[transitionKey][]*hookEntry
+	hooks                    map[string]*hookEntry
 }
 
 // NewRegistry creates a new synchronous hook registry.
 func NewRegistry(opts ...Option) (*Registry, error) {
 	r := &Registry{
-		logger:              slog.Default(),
-		preTransitionHooks:  make(map[transitionKey][]string),
-		postTransitionHooks: make(map[transitionKey][]string),
-		preHooks:            make(map[string]GuardFunc),
-		postHooks:           make(map[string]ActionFunc),
-		metadata:            make(map[string]hookMetadata),
+		logger:                   slog.Default(),
+		preTransitionHooksIndex:  make(map[transitionKey][]*hookEntry),
+		postTransitionHooksIndex: make(map[transitionKey][]*hookEntry),
+		hooks:                    make(map[string]*hookEntry),
 	}
 
 	for _, opt := range opts {
@@ -84,8 +82,168 @@ func NewRegistry(opts ...Option) (*Registry, error) {
 	return r, nil
 }
 
-// resolveTransitionPatterns resolves from/to state patterns into concrete (from, to) pairs.
-func (r *Registry) resolveTransitionPatterns(fromPatterns, toPatterns []string) ([]transitionKey, error) {
+// ExecutePreTransitionHooks runs all registered pre-transition hooks for the specific transition in FIFO order.
+// Returns an error if any pre-transition hook fails.
+func (r *Registry) ExecutePreTransitionHooks(ctx context.Context, from, to string) error {
+	r.mu.RLock()
+	entries := r.preTransitionHooksIndex[transitionKey{from, to}]
+	r.mu.RUnlock()
+
+	for i, entry := range entries {
+		if err := r.safeCallGuard(ctx, entry.guard, from, to); err != nil {
+			return fmt.Errorf("%w during transition at index %d: %w",
+				ErrCallbackFailed, i, err)
+		}
+	}
+	return nil
+}
+
+// ExecutePostTransitionHooks runs all registered post-transition hooks in FIFO order.
+// Panics are recovered and logged but do not propagate.
+func (r *Registry) ExecutePostTransitionHooks(ctx context.Context, from, to string) {
+	r.mu.RLock()
+	entries := r.postTransitionHooksIndex[transitionKey{from, to}]
+	r.mu.RUnlock()
+
+	for _, entry := range entries {
+		r.safeCallAction(ctx, entry.action, from, to)
+	}
+}
+
+// GetHooks returns information about all registered hooks.
+func (r *Registry) GetHooks() []HookInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	hooks := make([]HookInfo, 0, len(r.hooks))
+	for name, entry := range r.hooks {
+		hooks = append(hooks, HookInfo{
+			Name:       name,
+			FromStates: entry.fromStates,
+			ToStates:   entry.toStates,
+			Type:       entry.hookType,
+		})
+	}
+
+	return hooks
+}
+
+// RegisterPreTransitionHook registers a pre-transition hook for transitions matching the patterns.
+// Accepts a configuration struct with name, state patterns (use "*" for any state), and guard.
+// Resolves patterns and registers the guard for each concrete (from, to) transition.
+func (r *Registry) RegisterPreTransitionHook(config PreTransitionHookConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry := &hookEntry{
+		guard:      config.Guard,
+		fromStates: config.From,
+		toStates:   config.To,
+		hookType:   HookTypePre,
+	}
+
+	keys, err := r.registerHookEntry(config.Name, entry)
+	if err != nil {
+		return err
+	}
+
+	for _, key := range keys {
+		r.preTransitionHooksIndex[key] = append(r.preTransitionHooksIndex[key], entry)
+	}
+
+	return nil
+}
+
+// RegisterPostTransitionHook registers a post-transition hook for transitions matching the patterns.
+// Accepts a configuration struct with name, state patterns (use "*" for any state), and action.
+// Resolves patterns and registers the action for each concrete (from, to) transition.
+func (r *Registry) RegisterPostTransitionHook(config PostTransitionHookConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry := &hookEntry{
+		action:     config.Action,
+		fromStates: config.From,
+		toStates:   config.To,
+		hookType:   HookTypePost,
+	}
+
+	keys, err := r.registerHookEntry(config.Name, entry)
+	if err != nil {
+		return err
+	}
+
+	for _, key := range keys {
+		r.postTransitionHooksIndex[key] = append(r.postTransitionHooksIndex[key], entry)
+	}
+
+	return nil
+}
+
+// RemoveHook removes a hook by name from all registrations.
+func (r *Registry) RemoveHook(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry, exists := r.hooks[name]
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrHookNotFound, name)
+	}
+
+	// Linear scan: remove the entry pointer from all transitions
+	if entry.hookType == HookTypePre {
+		for key := range r.preTransitionHooksIndex {
+			r.preTransitionHooksIndex[key] = removePointerFromSlice(r.preTransitionHooksIndex[key], entry)
+		}
+	} else {
+		for key := range r.postTransitionHooksIndex {
+			r.postTransitionHooksIndex[key] = removePointerFromSlice(r.postTransitionHooksIndex[key], entry)
+		}
+	}
+
+	delete(r.hooks, name)
+
+	return nil
+}
+
+// Clear removes all registered hooks.
+func (r *Registry) Clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.preTransitionHooksIndex = make(map[transitionKey][]*hookEntry)
+	r.postTransitionHooksIndex = make(map[transitionKey][]*hookEntry)
+	r.hooks = make(map[string]*hookEntry)
+}
+
+// registerHookEntry performs common validation and stores a hookEntry for registration.
+// Must be called while holding r.mu lock.
+func (r *Registry) registerHookEntry(name string, entry *hookEntry) ([]transitionKey, error) {
+	if name == "" {
+		return nil, ErrHookNameEmpty
+	}
+
+	if len(entry.fromStates) == 0 || len(entry.toStates) == 0 {
+		return nil, fmt.Errorf("from and to state lists cannot be empty")
+	}
+
+	if _, exists := r.hooks[name]; exists {
+		return nil, fmt.Errorf("%w: %s", ErrHookNameAlreadyExists, name)
+	}
+
+	keys, err := r.buildIndexKeys(entry.fromStates, entry.toStates)
+	if err != nil {
+		return nil, err
+	}
+
+	r.hooks[name] = entry
+
+	return keys, nil
+}
+
+// buildIndexKeys builds index keys from pattern strings by expanding wildcards and computing the cartesian product.
+// TODO: what if the GetAllStates() returns data that becomes stale later?
+func (r *Registry) buildIndexKeys(fromPatterns, toPatterns []string) ([]transitionKey, error) {
 	var fromStates []string
 	for _, pattern := range fromPatterns {
 		if pattern == "*" {
@@ -127,191 +285,15 @@ func (r *Registry) resolveTransitionPatterns(fromPatterns, toPatterns []string) 
 	return keys, nil
 }
 
-// ExecutePreTransitionHooks runs all registered pre-transition hooks for the specific transition in FIFO order.
-// Returns an error if any pre-transition hook fails.
-func (r *Registry) ExecutePreTransitionHooks(ctx context.Context, from, to string) error {
-	r.mu.RLock()
-	hookNames := r.preTransitionHooks[transitionKey{from, to}]
-	r.mu.RUnlock()
-
-	for i, name := range hookNames {
-		guard := r.getPreHook(name)
-		if err := r.safeCallGuard(ctx, guard, from, to); err != nil {
-			return fmt.Errorf("%w during transition at index %d: %w",
-				ErrCallbackFailed, i, err)
-		}
-	}
-	return nil
-}
-
-// ExecutePostTransitionHooks runs all registered post-transition hooks in FIFO order.
-// Panics are recovered and logged but do not propagate.
-func (r *Registry) ExecutePostTransitionHooks(ctx context.Context, from, to string) {
-	r.mu.RLock()
-	hookNames := r.postTransitionHooks[transitionKey{from, to}]
-	r.mu.RUnlock()
-
-	for _, name := range hookNames {
-		action := r.getPostHook(name)
-		r.safeCallAction(ctx, action, from, to)
-	}
-}
-
-// getPreHook retrieves a pre-transition hook guard by name.
-func (r *Registry) getPreHook(name string) GuardFunc {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.preHooks[name]
-}
-
-// getPostHook retrieves a post-transition hook action by name.
-func (r *Registry) getPostHook(name string) ActionFunc {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.postHooks[name]
-}
-
-// registerHookCommon performs common validation and metadata storage for hook registration.
-// Must be called while holding r.mu lock.
-func (r *Registry) registerHookCommon(name string, from, to []string, hookType HookType) ([]transitionKey, error) {
-	if name == "" {
-		return nil, ErrHookNameEmpty
-	}
-
-	if len(from) == 0 || len(to) == 0 {
-		return nil, fmt.Errorf("from and to state lists cannot be empty")
-	}
-
-	if _, exists := r.metadata[name]; exists {
-		return nil, fmt.Errorf("%w: %s", ErrHookNameAlreadyExists, name)
-	}
-
-	keys, err := r.resolveTransitionPatterns(from, to)
-	if err != nil {
-		return nil, err
-	}
-
-	r.metadata[name] = hookMetadata{
-		fromStates: from,
-		toStates:   to,
-		hookType:   hookType,
-	}
-
-	return keys, nil
-}
-
-// RegisterPreTransitionHook registers a pre-transition hook for transitions matching the patterns.
-// Accepts a configuration struct with name, state patterns (use "*" for any state), and guard.
-// Resolves patterns and registers the guard for each concrete (from, to) transition.
-func (r *Registry) RegisterPreTransitionHook(config PreTransitionHookConfig) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	keys, err := r.registerHookCommon(config.Name, config.From, config.To, HookTypePre)
-	if err != nil {
-		return err
-	}
-
-	r.preHooks[config.Name] = config.Guard
-	for _, key := range keys {
-		r.preTransitionHooks[key] = append(r.preTransitionHooks[key], config.Name)
-	}
-
-	return nil
-}
-
-// RegisterPostTransitionHook registers a post-transition hook for transitions matching the patterns.
-// Accepts a configuration struct with name, state patterns (use "*" for any state), and action.
-// Resolves patterns and registers the action for each concrete (from, to) transition.
-func (r *Registry) RegisterPostTransitionHook(config PostTransitionHookConfig) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	keys, err := r.registerHookCommon(config.Name, config.From, config.To, HookTypePost)
-	if err != nil {
-		return err
-	}
-
-	r.postHooks[config.Name] = config.Action
-	for _, key := range keys {
-		r.postTransitionHooks[key] = append(r.postTransitionHooks[key], config.Name)
-	}
-
-	return nil
-}
-
-// GetHooks returns information about all registered hooks.
-func (r *Registry) GetHooks() []HookInfo {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	hooks := make([]HookInfo, 0, len(r.metadata))
-	for name, meta := range r.metadata {
-		hooks = append(hooks, HookInfo{
-			Name:       name,
-			FromStates: meta.fromStates,
-			ToStates:   meta.toStates,
-			Type:       meta.hookType,
-		})
-	}
-
-	return hooks
-}
-
-// RemoveHook removes a hook by name from all registrations.
-func (r *Registry) RemoveHook(name string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	meta, exists := r.metadata[name]
-	if !exists {
-		return fmt.Errorf("%w: %s", ErrHookNotFound, name)
-	}
-
-	keys, err := r.resolveTransitionPatterns(meta.fromStates, meta.toStates)
-	if err != nil {
-		return err
-	}
-
-	for _, key := range keys {
-		if meta.hookType == HookTypePre {
-			r.preTransitionHooks[key] = removeFromSlice(r.preTransitionHooks[key], name)
-		} else {
-			r.postTransitionHooks[key] = removeFromSlice(r.postTransitionHooks[key], name)
-		}
-	}
-
-	delete(r.metadata, name)
-	if meta.hookType == HookTypePre {
-		delete(r.preHooks, name)
-	} else {
-		delete(r.postHooks, name)
-	}
-
-	return nil
-}
-
-// removeFromSlice removes a string from a slice and returns the new slice.
-func removeFromSlice(slice []string, item string) []string {
-	result := make([]string, 0, len(slice))
-	for _, s := range slice {
-		if s != item {
-			result = append(result, s)
+// removePointerFromSlice removes a hookEntry pointer from a slice and returns the new slice.
+func removePointerFromSlice(slice []*hookEntry, target *hookEntry) []*hookEntry {
+	result := make([]*hookEntry, 0, len(slice))
+	for _, entry := range slice {
+		if entry != target {
+			result = append(result, entry)
 		}
 	}
 	return result
-}
-
-// Clear removes all registered hooks.
-func (r *Registry) Clear() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.preTransitionHooks = make(map[transitionKey][]string)
-	r.postTransitionHooks = make(map[transitionKey][]string)
-	r.preHooks = make(map[string]GuardFunc)
-	r.postHooks = make(map[string]ActionFunc)
-	r.metadata = make(map[string]hookMetadata)
 }
 
 // safeCallGuard executes a guard with panic recovery.

@@ -171,8 +171,8 @@ func TestClear(t *testing.T) {
 		reg.Clear()
 
 		reg.mu.RLock()
-		assert.Empty(t, reg.preTransitionHooks)
-		assert.Empty(t, reg.postTransitionHooks)
+		assert.Empty(t, reg.preTransitionHooksIndex)
+		assert.Empty(t, reg.postTransitionHooksIndex)
 		reg.mu.RUnlock()
 	})
 }
