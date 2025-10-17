@@ -52,7 +52,7 @@ type PostTransitionHookConfig struct {
 	Action ActionFunc
 }
 
-// HookInfo represents information about a registered hook.
+// HookInfo represents information about a registered hook, returned by GetHooks.
 type HookInfo struct {
 	Name       string
 	FromStates []string

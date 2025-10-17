@@ -17,11 +17,16 @@ limitations under the License.
 package hooks
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"iter"
 	"log/slog"
+	"slices"
 	"sync"
 )
+
+const WildcardStatePattern = "*"
 
 // transitionDB provides state lookup and enumeration.
 // This interface is satisfied by transitions.Config.
@@ -44,24 +49,46 @@ type transitionKey struct {
 	to   string
 }
 
+// String returns a string representation of the transition key for debugging.
+func (k transitionKey) String() string {
+	return k.from + "->" + k.to
+}
+
 // hookEntry stores a registered hook with its function and metadata.
 type hookEntry struct {
-	guard      GuardFunc
-	action     ActionFunc
-	fromStates []string
-	toStates   []string
-	hookType   HookType
+	guard           GuardFunc
+	action          ActionFunc
+	fromStates      []string
+	toStates        []string
+	hookType        HookType
+	registrationSeq int
+	wildcardPresent bool
+}
+
+// removeFrom removes this hookEntry from the given slice and returns the new slice.
+func (e *hookEntry) removeFrom(slice []*hookEntry) []*hookEntry {
+	return slices.DeleteFunc(slice, func(entry *hookEntry) bool {
+		return entry == e
+	})
 }
 
 // Registry executes hooks synchronously in FIFO order.
 // It handles panic recovery and error wrapping for all hook executions.
+//
+// Hook storage strategy:
+// - Concrete pattern hooks are indexed in maps for O(1) lookup by transition.
+// - Wildcard pattern hooks are stored in slices and evaluated at runtime for dynamic state matching.
+// - FIFO ordering is maintained across both types using registration sequence numbers.
 type Registry struct {
 	mu                       sync.RWMutex
 	logger                   *slog.Logger
 	transitions              transitionDB
 	preTransitionHooksIndex  map[transitionKey][]*hookEntry
 	postTransitionHooksIndex map[transitionKey][]*hookEntry
+	preWildcardHooks         []*hookEntry
+	postWildcardHooks        []*hookEntry
 	hooks                    map[string]*hookEntry
+	nextSeq                  int
 }
 
 // NewRegistry creates a new synchronous hook registry.
@@ -86,10 +113,37 @@ func NewRegistry(opts ...Option) (*Registry, error) {
 // Returns an error if any pre-transition hook fails.
 func (r *Registry) ExecutePreTransitionHooks(ctx context.Context, from, to string) error {
 	r.mu.RLock()
-	entries := r.preTransitionHooksIndex[transitionKey{from, to}]
+	concreteEntries := r.preTransitionHooksIndex[transitionKey{from, to}]
+	wildcardHooks := r.preWildcardHooks
 	r.mu.RUnlock()
 
-	for i, entry := range entries {
+	// Fast path: no wildcard hooks registered, execute concrete hooks directly
+	if len(wildcardHooks) == 0 {
+		for i, entry := range concreteEntries {
+			if err := r.safeCallGuard(ctx, entry.guard, from, to); err != nil {
+				return fmt.Errorf("%w during transition at index %d: %w",
+					ErrCallbackFailed, i, err)
+			}
+		}
+		return nil
+	}
+
+	// Slow path: collect concrete + matching wildcard hooks, then sort
+	allEntries := make([]*hookEntry, 0, len(concreteEntries)+len(wildcardHooks))
+	allEntries = append(allEntries, concreteEntries...)
+	for _, entry := range wildcardHooks {
+		if matchesPattern(entry.fromStates, from) && matchesPattern(entry.toStates, to) {
+			allEntries = append(allEntries, entry)
+		}
+	}
+
+	// Sort by registration sequence to maintain FIFO order
+	slices.SortFunc(allEntries, func(a, b *hookEntry) int {
+		return cmp.Compare(a.registrationSeq, b.registrationSeq)
+	})
+
+	// Execute in order
+	for i, entry := range allEntries {
 		if err := r.safeCallGuard(ctx, entry.guard, from, to); err != nil {
 			return fmt.Errorf("%w during transition at index %d: %w",
 				ErrCallbackFailed, i, err)
@@ -102,35 +156,62 @@ func (r *Registry) ExecutePreTransitionHooks(ctx context.Context, from, to strin
 // Panics are recovered and logged but do not propagate.
 func (r *Registry) ExecutePostTransitionHooks(ctx context.Context, from, to string) {
 	r.mu.RLock()
-	entries := r.postTransitionHooksIndex[transitionKey{from, to}]
+	concreteEntries := r.postTransitionHooksIndex[transitionKey{from, to}]
+	wildcardHooks := r.postWildcardHooks
 	r.mu.RUnlock()
 
-	for _, entry := range entries {
+	// Fast path: no wildcard hooks registered, execute concrete hooks directly
+	if len(wildcardHooks) == 0 {
+		for _, entry := range concreteEntries {
+			r.safeCallAction(ctx, entry.action, from, to)
+		}
+		return
+	}
+
+	// Slow path: collect concrete + matching wildcard hooks, then sort
+	allEntries := make([]*hookEntry, 0, len(concreteEntries)+len(wildcardHooks))
+	allEntries = append(allEntries, concreteEntries...)
+	for _, entry := range wildcardHooks {
+		if matchesPattern(entry.fromStates, from) && matchesPattern(entry.toStates, to) {
+			allEntries = append(allEntries, entry)
+		}
+	}
+
+	// Sort by registration sequence to maintain FIFO order
+	slices.SortFunc(allEntries, func(a, b *hookEntry) int {
+		return cmp.Compare(a.registrationSeq, b.registrationSeq)
+	})
+
+	// Execute in order
+	for _, entry := range allEntries {
 		r.safeCallAction(ctx, entry.action, from, to)
 	}
 }
 
-// GetHooks returns information about all registered hooks.
-func (r *Registry) GetHooks() []HookInfo {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+// GetHooks returns an iterator over all registered hooks.
+// The RLock is held during the entire iteration, so callers should consume the iterator promptly.
+// The returned slices (FromStates, ToStates) are defensive copies.
+func (r *Registry) GetHooks() iter.Seq[HookInfo] {
+	return func(yield func(HookInfo) bool) {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
 
-	hooks := make([]HookInfo, 0, len(r.hooks))
-	for name, entry := range r.hooks {
-		hooks = append(hooks, HookInfo{
-			Name:       name,
-			FromStates: entry.fromStates,
-			ToStates:   entry.toStates,
-			Type:       entry.hookType,
-		})
+		for name, entry := range r.hooks {
+			if !yield(HookInfo{
+				Name:       name,
+				FromStates: slices.Clone(entry.fromStates),
+				ToStates:   slices.Clone(entry.toStates),
+				Type:       entry.hookType,
+			}) {
+				return
+			}
+		}
 	}
-
-	return hooks
 }
 
 // RegisterPreTransitionHook registers a pre-transition hook for transitions matching the patterns.
 // Accepts a configuration struct with name, state patterns (use "*" for any state), and guard.
-// Resolves patterns and registers the guard for each concrete (from, to) transition.
+// Concrete patterns are indexed at registration; wildcard patterns are evaluated at runtime.
 func (r *Registry) RegisterPreTransitionHook(config PreTransitionHookConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -142,13 +223,17 @@ func (r *Registry) RegisterPreTransitionHook(config PreTransitionHookConfig) err
 		hookType:   HookTypePre,
 	}
 
-	keys, err := r.registerHookEntry(config.Name, entry)
+	keys, hasWildcard, err := r.registerHookEntry(config.Name, entry)
 	if err != nil {
 		return err
 	}
 
-	for _, key := range keys {
-		r.preTransitionHooksIndex[key] = append(r.preTransitionHooksIndex[key], entry)
+	if hasWildcard {
+		r.preWildcardHooks = append(r.preWildcardHooks, entry)
+	} else {
+		for _, key := range keys {
+			r.preTransitionHooksIndex[key] = append(r.preTransitionHooksIndex[key], entry)
+		}
 	}
 
 	return nil
@@ -156,7 +241,7 @@ func (r *Registry) RegisterPreTransitionHook(config PreTransitionHookConfig) err
 
 // RegisterPostTransitionHook registers a post-transition hook for transitions matching the patterns.
 // Accepts a configuration struct with name, state patterns (use "*" for any state), and action.
-// Resolves patterns and registers the action for each concrete (from, to) transition.
+// Concrete patterns are indexed at registration; wildcard patterns are evaluated at runtime.
 func (r *Registry) RegisterPostTransitionHook(config PostTransitionHookConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -168,13 +253,17 @@ func (r *Registry) RegisterPostTransitionHook(config PostTransitionHookConfig) e
 		hookType:   HookTypePost,
 	}
 
-	keys, err := r.registerHookEntry(config.Name, entry)
+	keys, hasWildcard, err := r.registerHookEntry(config.Name, entry)
 	if err != nil {
 		return err
 	}
 
-	for _, key := range keys {
-		r.postTransitionHooksIndex[key] = append(r.postTransitionHooksIndex[key], entry)
+	if hasWildcard {
+		r.postWildcardHooks = append(r.postWildcardHooks, entry)
+	} else {
+		for _, key := range keys {
+			r.postTransitionHooksIndex[key] = append(r.postTransitionHooksIndex[key], entry)
+		}
 	}
 
 	return nil
@@ -190,15 +279,17 @@ func (r *Registry) RemoveHook(name string) error {
 		return fmt.Errorf("%w: %s", ErrHookNotFound, name)
 	}
 
-	// Linear scan: remove the entry pointer from all transitions
+	// Linear scan: remove the entry pointer from all transitions and wildcard slices
 	if entry.hookType == HookTypePre {
 		for key := range r.preTransitionHooksIndex {
-			r.preTransitionHooksIndex[key] = removePointerFromSlice(r.preTransitionHooksIndex[key], entry)
+			r.preTransitionHooksIndex[key] = entry.removeFrom(r.preTransitionHooksIndex[key])
 		}
+		r.preWildcardHooks = entry.removeFrom(r.preWildcardHooks)
 	} else {
 		for key := range r.postTransitionHooksIndex {
-			r.postTransitionHooksIndex[key] = removePointerFromSlice(r.postTransitionHooksIndex[key], entry)
+			r.postTransitionHooksIndex[key] = entry.removeFrom(r.postTransitionHooksIndex[key])
 		}
+		r.postWildcardHooks = entry.removeFrom(r.postWildcardHooks)
 	}
 
 	delete(r.hooks, name)
@@ -213,65 +304,79 @@ func (r *Registry) Clear() {
 
 	r.preTransitionHooksIndex = make(map[transitionKey][]*hookEntry)
 	r.postTransitionHooksIndex = make(map[transitionKey][]*hookEntry)
+	r.preWildcardHooks = nil
+	r.postWildcardHooks = nil
 	r.hooks = make(map[string]*hookEntry)
+	r.nextSeq = 0
 }
 
 // registerHookEntry performs common validation and stores a hookEntry for registration.
 // Must be called while holding r.mu lock.
-func (r *Registry) registerHookEntry(name string, entry *hookEntry) ([]transitionKey, error) {
+// Returns index keys for concrete patterns, or hasWildcard=true for wildcard patterns.
+func (r *Registry) registerHookEntry(name string, entry *hookEntry) ([]transitionKey, bool, error) {
 	if name == "" {
-		return nil, ErrHookNameEmpty
+		return nil, false, ErrHookNameEmpty
 	}
 
 	if len(entry.fromStates) == 0 || len(entry.toStates) == 0 {
-		return nil, fmt.Errorf("from and to state lists cannot be empty")
+		return nil, false, fmt.Errorf("from and to state lists cannot be empty")
 	}
 
 	if _, exists := r.hooks[name]; exists {
-		return nil, fmt.Errorf("%w: %s", ErrHookNameAlreadyExists, name)
+		return nil, false, fmt.Errorf("%w: %s", ErrHookNameAlreadyExists, name)
 	}
 
-	keys, err := r.buildIndexKeys(entry.fromStates, entry.toStates)
+	// Assign registration sequence
+	entry.registrationSeq = r.nextSeq
+	r.nextSeq++
+
+	// Check for wildcard patterns
+	if hasWildcardPattern(entry.fromStates) || hasWildcardPattern(entry.toStates) {
+		// Wildcard hooks require a transition table
+		if r.transitions == nil {
+			return nil, false, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
+		}
+		entry.wildcardPresent = true
+		r.hooks[name] = entry
+		return nil, true, nil
+	}
+
+	// Concrete patterns: build index keys
+	entry.wildcardPresent = false
+	keys, err := r.buildConcreteIndexKeys(entry.fromStates, entry.toStates)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	r.hooks[name] = entry
-
-	return keys, nil
+	return keys, false, nil
 }
 
-// buildIndexKeys builds index keys from pattern strings by expanding wildcards and computing the cartesian product.
-// TODO: what if the GetAllStates() returns data that becomes stale later?
-func (r *Registry) buildIndexKeys(fromPatterns, toPatterns []string) ([]transitionKey, error) {
+// hasWildcardPattern checks if any pattern in the list is a wildcard ("*").
+func hasWildcardPattern(patterns []string) bool {
+	return slices.Contains(patterns, WildcardStatePattern)
+}
+
+// buildConcreteIndexKeys builds index keys from concrete pattern strings.
+// Assumes no wildcards are present in the patterns (caller must check first).
+// Validates that all state names exist in the transition table if provided.
+func (r *Registry) buildConcreteIndexKeys(fromPatterns, toPatterns []string) ([]transitionKey, error) {
+	// Validate and collect from states
 	var fromStates []string
 	for _, pattern := range fromPatterns {
-		if pattern == "*" {
-			if r.transitions == nil {
-				return nil, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
-			}
-			fromStates = append(fromStates, r.transitions.GetAllStates()...)
-		} else {
-			if r.transitions != nil && !r.transitions.HasState(pattern) {
-				return nil, fmt.Errorf("unknown state '%s'", pattern)
-			}
-			fromStates = append(fromStates, pattern)
+		if r.transitions != nil && !r.transitions.HasState(pattern) {
+			return nil, fmt.Errorf("unknown state '%s'", pattern)
 		}
+		fromStates = append(fromStates, pattern)
 	}
 
+	// Validate and collect to states
 	var toStates []string
 	for _, pattern := range toPatterns {
-		if pattern == "*" {
-			if r.transitions == nil {
-				return nil, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
-			}
-			toStates = append(toStates, r.transitions.GetAllStates()...)
-		} else {
-			if r.transitions != nil && !r.transitions.HasState(pattern) {
-				return nil, fmt.Errorf("unknown state '%s'", pattern)
-			}
-			toStates = append(toStates, pattern)
+		if r.transitions != nil && !r.transitions.HasState(pattern) {
+			return nil, fmt.Errorf("unknown state '%s'", pattern)
 		}
+		toStates = append(toStates, pattern)
 	}
 
 	// Compute cartesian product
@@ -285,15 +390,10 @@ func (r *Registry) buildIndexKeys(fromPatterns, toPatterns []string) ([]transiti
 	return keys, nil
 }
 
-// removePointerFromSlice removes a hookEntry pointer from a slice and returns the new slice.
-func removePointerFromSlice(slice []*hookEntry, target *hookEntry) []*hookEntry {
-	result := make([]*hookEntry, 0, len(slice))
-	for _, entry := range slice {
-		if entry != target {
-			result = append(result, entry)
-		}
-	}
-	return result
+// matchesPattern checks if a state matches any pattern in the list.
+// Returns true if patterns contains "*" (wildcard) or the specific state.
+func matchesPattern(patterns []string, state string) bool {
+	return slices.Contains(patterns, WildcardStatePattern) || slices.Contains(patterns, state)
 }
 
 // safeCallGuard executes a guard with panic recovery.
