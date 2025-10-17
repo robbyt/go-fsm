@@ -18,12 +18,17 @@ import (
 // Create broadcast manager
 manager := broadcast.NewManager(slog.Default().Handler())
 
-// Register as post-transition hook using the convenience method
+// Register as post-transition hook
 registry, _ := hooks.NewRegistry(
 	hooks.WithLogger(slog.Default()),
 	hooks.WithTransitions(transitions.Typical),
 )
-registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, manager.BroadcastHook)
+registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+	Name:   "broadcast",
+	From:   []string{"*"},
+	To:     []string{"*"},
+	Action: manager.BroadcastHook,
+})
 
 // Create FSM
 machine, _ := fsm.New(transitions.StatusNew, transitions.Typical,

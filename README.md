@@ -168,8 +168,13 @@ if err != nil {
 	// Handle error
 }
 
-err = registry.RegisterPreTransitionHook([]string{"offline"}, []string{"online"}, func(ctx context.Context, from, to string) error {
-	return establishConnection()
+err = registry.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+	Name: "establish-connection",
+	From: []string{"offline"},
+	To:   []string{"online"},
+	Guard: func(ctx context.Context, from, to string) error {
+		return establishConnection()
+	},
 })
 if err != nil {
 	// Handle error
@@ -204,8 +209,13 @@ if err != nil {
 	// Handle error
 }
 
-err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-	metrics.RecordTransition(from, to)
+err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+	Name: "record-metrics",
+	From: []string{"*"},
+	To:   []string{"*"},
+	Action: func(ctx context.Context, from, to string) {
+		metrics.RecordTransition(from, to)
+	},
 })
 if err != nil {
 	// Handle error
@@ -241,18 +251,28 @@ if err != nil {
 }
 
 // Pre-transition hook - validate transition
-err = registry.RegisterPreTransitionHook([]string{"offline"}, []string{"online"}, func(ctx context.Context, from, to string) error {
-	logger.Info("validating transition", "from", from, "to", to)
-	// In real code, you might check permissions, validate state, establish connections, etc.
-	return nil
+err = registry.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+	Name: "validate-offline-online",
+	From: []string{"offline"},
+	To:   []string{"online"},
+	Guard: func(ctx context.Context, from, to string) error {
+		logger.Info("validating transition", "from", from, "to", to)
+		// In real code, you might check permissions, validate state, establish connections, etc.
+		return nil
+	},
 })
 if err != nil {
 	// Handle error
 }
 
 // Post-transition hook - notification
-err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-	logger.Info("state changed", "from", from, "to", to)
+err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+	Name: "notify-state-change",
+	From: []string{"*"},
+	To:   []string{"*"},
+	Action: func(ctx context.Context, from, to string) {
+		logger.Info("state changed", "from", from, "to", to)
+	},
 })
 if err != nil {
 	// Handle error
@@ -272,19 +292,34 @@ Use `"*"` to match any state in hook registrations.
 
 ```go
 // Register a hook for all transitions FROM any state TO "error"
-err = registry.RegisterPreTransitionHook([]string{"*"}, []string{"error"}, func(ctx context.Context, from, to string) error {
-	logger.Error("transitioning to error state", "from", from)
-	return nil
+err = registry.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+	Name: "log-error-transitions",
+	From: []string{"*"},
+	To:   []string{"error"},
+	Guard: func(ctx context.Context, from, to string) error {
+		logger.Error("transitioning to error state", "from", from)
+		return nil
+	},
 })
 
 // Register a hook for all transitions FROM "running" TO any state
-err = registry.RegisterPostTransitionHook([]string{"running"}, []string{"*"}, func(ctx context.Context, from, to string) {
-	logger.Info("leaving running state", "to", to)
+err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+	Name: "log-leaving-running",
+	From: []string{"running"},
+	To:   []string{"*"},
+	Action: func(ctx context.Context, from, to string) {
+		logger.Info("leaving running state", "to", to)
+	},
 })
 
 // Register a hook for ALL state transitions (any from, any to)
-err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-	metrics.RecordTransition(from, to)
+err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+	Name: "record-all-transitions",
+	From: []string{"*"},
+	To:   []string{"*"},
+	Action: func(ctx context.Context, from, to string) {
+		metrics.RecordTransition(from, to)
+	},
 })
 ```
 
@@ -325,7 +360,12 @@ func main() {
 
 	// 2. Register the broadcast hook to run after all transitions
 	registry, _ := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
-	_ = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, manager.BroadcastHook)
+	_ = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name:   "broadcast",
+		From:   []string{"*"},
+		To:     []string{"*"},
+		Action: manager.BroadcastHook,
+	})
 
 	// 3. Create the FSM with the callback registry
 	machine, _ := fsm.New(
