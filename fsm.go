@@ -39,10 +39,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 
+	"github.com/robbyt/go-fsm/v2/hooks"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
@@ -64,7 +66,9 @@ type Machine struct {
 
 // persistentState is used for JSON marshaling/unmarshaling.
 type persistentState struct {
-	State string `json:"state"`
+	State       string              `json:"state"`
+	Transitions map[string][]string `json:"transitions"`
+	Hooks       []hooks.HookInfo    `json:"hooks,omitempty"`
 }
 
 // New creates a finite state machine with the specified initial state and transitions.
@@ -140,11 +144,35 @@ func NewSimple(
 }
 
 // MarshalJSON implements the json.Marshaler interface.
+// It serializes the current state, all transitions, and registered hooks.
 func (fsm *Machine) MarshalJSON() ([]byte, error) {
 	currentState := fsm.GetState()
 
+	// Get transitions as a map
+	var transitionsMap map[string][]string
+	if transConfig, ok := fsm.transitions.(*transitions.Config); ok {
+		transitionsMap = transConfig.AsMap()
+	} else {
+		return nil, fmt.Errorf("transitions is not *transitions.Config, cannot marshal")
+	}
+
 	pState := persistentState{
-		State: currentState,
+		State:       currentState,
+		Transitions: transitionsMap,
+	}
+
+	// Get hooks if a registry is configured
+	if fsm.callbacks != nil {
+		type hookGetter interface {
+			GetHooks() iter.Seq[hooks.HookInfo]
+		}
+		if registry, ok := fsm.callbacks.(hookGetter); ok {
+			var hookList []hooks.HookInfo
+			for hookInfo := range registry.GetHooks() {
+				hookList = append(hookList, hookInfo)
+			}
+			pState.Hooks = hookList
+		}
 	}
 
 	jsonData, err := json.Marshal(pState)
@@ -153,6 +181,54 @@ func (fsm *Machine) MarshalJSON() ([]byte, error) {
 	}
 
 	return jsonData, nil
+}
+
+// UnmarshalJSON implements the json.Unmarshaler interface.
+// It restores the state and transitions from JSON.
+// Hooks are not restored and must be re-registered after unmarshaling.
+func (fsm *Machine) UnmarshalJSON(data []byte) error {
+	var pState persistentState
+	if err := json.Unmarshal(data, &pState); err != nil {
+		return fmt.Errorf("failed to unmarshal FSM: %w", err)
+	}
+
+	if pState.State == "" {
+		return ErrEmptyState
+	}
+
+	if len(pState.Transitions) == 0 {
+		return ErrEmptyTransitions
+	}
+
+	// Create transitions.Config from the map
+	transConfig, err := transitions.New(pState.Transitions)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidJSONTransitions, err)
+	}
+
+	// Validate that the state exists in transitions
+	if !transConfig.HasState(pState.State) {
+		return fmt.Errorf("%w: state '%s' is not defined in transitions", ErrInvalidConfiguration, pState.State)
+	}
+
+	// Set the FSM fields
+	fsm.state.Store(pState.State)
+	fsm.transitions = transConfig
+	fsm.callbacks = nil
+
+	// Initialize logger if not already set
+	if fsm.logger == nil {
+		handler := slog.Default().Handler().WithGroup("fsm")
+		fsm.logger = slog.New(handler)
+	}
+
+	// Warn if hooks were present in JSON
+	if len(pState.Hooks) > 0 {
+		fsm.logger.Warn("hooks from JSON will be dropped and must be re-registered",
+			"hook_count", len(pState.Hooks))
+	}
+
+	return nil
 }
 
 // GetState returns the current state of the finite state machine.

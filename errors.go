@@ -26,3 +26,12 @@ var ErrCurrentStateIncorrect = errors.New("current state is incorrect")
 
 // ErrInvalidStateTransition is returned when the state transition is invalid
 var ErrInvalidStateTransition = errors.New("state transition is invalid")
+
+// ErrEmptyState is returned when attempting to unmarshal JSON with an empty state
+var ErrEmptyState = errors.New("state cannot be empty")
+
+// ErrEmptyTransitions is returned when attempting to unmarshal JSON with empty transitions
+var ErrEmptyTransitions = errors.New("transitions cannot be empty")
+
+// ErrInvalidJSONTransitions is returned when JSON transitions configuration is invalid
+var ErrInvalidJSONTransitions = errors.New("invalid transitions in JSON")

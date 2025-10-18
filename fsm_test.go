@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -420,20 +422,151 @@ func TestFSM_JSONPersistence(t *testing.T) {
 		&slog.HandlerOptions{Level: slog.LevelError},
 	)
 
-	mockDB := newMockTransitionDB(map[string][]string{
+	transConfig := transitions.MustNew(map[string][]string{
 		"running":   {"stopped"},
 		"stopped":   {},
 		"reloading": {"running"},
 	})
 
-	fsm, err := New("running", mockDB, WithLogHandler(testHandler))
+	fsm, err := New("running", transConfig, WithLogHandler(testHandler))
 	require.NoError(t, err)
 
 	jsonData, err := json.Marshal(fsm)
 	require.NoError(t, err)
 
-	expectedJSON := `{"state":"running"}`
+	expectedJSON := `{"state":"running","transitions":{"running":["stopped"],"stopped":[],"reloading":["running"]}}`
 	assert.JSONEq(t, expectedJSON, string(jsonData))
+}
+
+func TestFSM_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// Create an FSM with transitions
+	transConfig := transitions.MustNew(map[string][]string{
+		"new":     {"booting"},
+		"booting": {"running", "error"},
+		"running": {"stopped", "error"},
+		"stopped": {},
+		"error":   {},
+	})
+
+	originalFSM, err := New("booting", transConfig)
+	require.NoError(t, err)
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(originalFSM)
+	require.NoError(t, err)
+
+	// Unmarshal into a new FSM
+	var restoredFSM Machine
+	err = json.Unmarshal(jsonData, &restoredFSM)
+	require.NoError(t, err)
+
+	// Verify state was restored
+	assert.Equal(t, "booting", restoredFSM.GetState())
+
+	// Verify transitions work
+	err = restoredFSM.Transition("running")
+	require.NoError(t, err)
+	assert.Equal(t, "running", restoredFSM.GetState())
+
+	// Verify invalid transition is rejected
+	err = restoredFSM.Transition("booting")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidStateTransition)
+}
+
+func TestFSM_JSONWithHooks(t *testing.T) {
+	t.Parallel()
+
+	// Create FSM with hooks
+	transConfig := transitions.MustNew(map[string][]string{
+		"offline": {"online"},
+		"online":  {"offline"},
+	})
+
+	// Need to import hooks package
+	registry, err := hooks.NewRegistry(
+		hooks.WithTransitions(transConfig),
+	)
+	require.NoError(t, err)
+
+	err = registry.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+		Name: "validate-connection",
+		From: []string{"offline"},
+		To:   []string{"online"},
+		Guard: func(ctx context.Context, from, to string) error {
+			return nil
+		},
+	})
+	require.NoError(t, err)
+
+	fsm, err := New("offline", transConfig, WithCallbackRegistry(registry))
+	require.NoError(t, err)
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(fsm)
+	require.NoError(t, err)
+
+	// Verify hooks are in JSON
+	var pState map[string]interface{}
+	err = json.Unmarshal(jsonData, &pState)
+	require.NoError(t, err)
+	assert.Contains(t, pState, "hooks")
+	hooks := pState["hooks"].([]interface{})
+	assert.Len(t, hooks, 1)
+
+	// Unmarshal should warn and drop hooks
+	var restoredFSM Machine
+	err = json.Unmarshal(jsonData, &restoredFSM)
+	require.NoError(t, err)
+
+	// Verify state and transitions restored
+	assert.Equal(t, "offline", restoredFSM.GetState())
+
+	// Hooks should NOT be restored (callbacks should be nil)
+	err = restoredFSM.Transition("online")
+	require.NoError(t, err)
+}
+
+func TestFSM_UnmarshalJSON_Errors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		jsonData    string
+		expectError error
+	}{
+		{
+			name:        "empty state",
+			jsonData:    `{"state":"","transitions":{"a":["b"],"b":[]}}`,
+			expectError: ErrEmptyState,
+		},
+		{
+			name:        "empty transitions",
+			jsonData:    `{"state":"running","transitions":{}}`,
+			expectError: ErrEmptyTransitions,
+		},
+		{
+			name:        "invalid transitions",
+			jsonData:    `{"state":"running","transitions":{"running":["undefined"]}}`,
+			expectError: ErrInvalidJSONTransitions,
+		},
+		{
+			name:        "state not in transitions",
+			jsonData:    `{"state":"invalid","transitions":{"running":["stopped"],"stopped":[]}}`,
+			expectError: ErrInvalidConfiguration,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var fsm Machine
+			err := json.Unmarshal([]byte(tt.jsonData), &fsm)
+			require.Error(t, err)
+			require.ErrorIs(t, err, tt.expectError)
+		})
+	}
 }
 
 func TestFSM_Concurrency(t *testing.T) {
