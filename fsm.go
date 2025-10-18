@@ -39,7 +39,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"iter"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -63,7 +62,7 @@ type transitionSerializer interface {
 // hookSerializer is an optional interface for callback executors that support JSON serialization.
 // Only callback executors implementing this interface will have hooks included in JSON output.
 type hookSerializer interface {
-	GetHooks() iter.Seq[hooks.HookInfo]
+	GetHooks() []hooks.HookInfo
 }
 
 // Machine represents a finite state machine that tracks its current state
@@ -227,11 +226,7 @@ func (fsm *Machine) MarshalJSON() ([]byte, error) {
 	// Get hooks if a registry is configured and supports serialization
 	if fsm.callbacks != nil {
 		if hookSer, ok := fsm.callbacks.(hookSerializer); ok {
-			var hookList []hooks.HookInfo
-			for hookInfo := range hookSer.GetHooks() {
-				hookList = append(hookList, hookInfo)
-			}
-			pState.Hooks = hookList
+			pState.Hooks = hookSer.GetHooks()
 		}
 	}
 

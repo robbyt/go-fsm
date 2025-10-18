@@ -20,7 +20,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"iter"
 	"log/slog"
 	"slices"
 	"sync"
@@ -202,25 +201,21 @@ func (r *Registry) ExecutePostTransitionHooks(ctx context.Context, from, to stri
 	}
 }
 
-// GetHooks returns an iterator over all registered hooks.
-// The RLock is held during the entire iteration, so callers should consume the iterator promptly.
-// The returned slices (FromStates, ToStates) are defensive copies.
-func (r *Registry) GetHooks() iter.Seq[HookInfo] {
-	return func(yield func(HookInfo) bool) {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
+// GetHooks returns all registered hooks as a slice of representative HookInfo structs.
+func (r *Registry) GetHooks() []HookInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-		for name, entry := range r.hooks {
-			if !yield(HookInfo{
-				Name:       name,
-				FromStates: slices.Clone(entry.fromStates),
-				ToStates:   slices.Clone(entry.toStates),
-				Type:       entry.hookType,
-			}) {
-				return
-			}
-		}
+	result := make([]HookInfo, 0, len(r.hooks))
+	for name, entry := range r.hooks {
+		result = append(result, HookInfo{
+			Name:       name,
+			FromStates: slices.Clone(entry.fromStates),
+			ToStates:   slices.Clone(entry.toStates),
+			Type:       entry.hookType,
+		})
 	}
+	return result
 }
 
 // RegisterPreTransitionHook registers a pre-transition hook for transitions matching the patterns.
