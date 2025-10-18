@@ -37,15 +37,16 @@ import (
 
 func main() {
 	logger := slog.Default()
-
-	// Create a new FSM with an initial state and a map of allowed transitions
-	machine, err := fsm.NewSimple("new", map[string][]string{
+	transitions := map[string][]string{
 		"new":     {"booting"},
 		"booting": {"running"},
 		"running": {"stopped", "error"},
 		"stopped": {"new"},
 		"error":   {}, // terminal state
-	}, fsm.WithLogger(logger))
+	}
+
+	// Create a new FSM with an initial state and a map of allowed transitions
+	machine, err := fsm.NewSimple("new", transitions, fsm.WithLogger(logger))
 	if err != nil {
 		logger.Error("failed to create FSM", "error", err)
 		return
@@ -57,7 +58,7 @@ func main() {
 	for _, state := range states {
 		if err := machine.Transition(state); err != nil {
 			logger.Error("transition failed", "to", state, "error", err)
-			return // Exit on failure for this simple example
+			return
 		}
 		fmt.Printf("Transitioned to: %s\n", machine.GetState())
 	}
@@ -210,7 +211,7 @@ if err != nil {
 }
 
 err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-	Name: "record-metrics",
+	Name: "record-transitions",
 	From: []string{"*"},
 	To:   []string{"*"},
 	Action: func(ctx context.Context, from, to string) {
@@ -393,8 +394,7 @@ func main() {
 	_ = machine.Transition(transitions.StatusBooting)
 	_ = machine.Transition(transitions.StatusRunning)
 
-	// Allow time for the last broadcast to be received
-	time.Sleep(10 * time.Millisecond)
+	// In production, the listener goroutine would typically run for the lifetime of your application.
 }
 ```
 
