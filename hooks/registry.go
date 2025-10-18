@@ -72,6 +72,12 @@ func (e *hookEntry) removeFrom(slice []*hookEntry) []*hookEntry {
 	})
 }
 
+// hasWildcardPattern returns true if either fromStates or toStates contains a wildcard pattern.
+func (e *hookEntry) hasWildcardPattern() bool {
+	return slices.Contains(e.fromStates, WildcardStatePattern) ||
+		slices.Contains(e.toStates, WildcardStatePattern)
+}
+
 // Registry executes hooks synchronously in FIFO order.
 // It handles panic recovery and error wrapping for all hook executions.
 //
@@ -331,7 +337,7 @@ func (r *Registry) registerHookEntry(name string, entry *hookEntry) ([]transitio
 	r.nextSeq++
 
 	// Check for wildcard patterns
-	if hasWildcardPattern(entry.fromStates) || hasWildcardPattern(entry.toStates) {
+	if entry.hasWildcardPattern() {
 		// Wildcard hooks require a transition table
 		if r.transitions == nil {
 			return nil, false, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
@@ -350,11 +356,6 @@ func (r *Registry) registerHookEntry(name string, entry *hookEntry) ([]transitio
 
 	r.hooks[name] = entry
 	return keys, false, nil
-}
-
-// hasWildcardPattern checks if any pattern in the list is a wildcard ("*").
-func hasWildcardPattern(patterns []string) bool {
-	return slices.Contains(patterns, WildcardStatePattern)
 }
 
 // buildConcreteIndexKeys builds index keys from concrete pattern strings.
