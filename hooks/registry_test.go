@@ -739,7 +739,7 @@ func TestGetHooks(t *testing.T) {
 		require.NoError(t, err)
 
 		count := 0
-		for info := range reg.GetHooks() {
+		for _, info := range reg.GetHooks() {
 			count++
 			assert.Equal(t, "test-hook", info.Name)
 			assert.Equal(t, []string{"A"}, info.FromStates)
@@ -773,7 +773,7 @@ func TestGetHooks(t *testing.T) {
 		require.NoError(t, err)
 
 		hooks := make(map[string]HookInfo)
-		for info := range reg.GetHooks() {
+		for _, info := range reg.GetHooks() {
 			hooks[info.Name] = info
 		}
 
@@ -804,7 +804,7 @@ func TestGetHooks(t *testing.T) {
 		require.NoError(t, err)
 
 		found := false
-		for info := range reg.GetHooks() {
+		for _, info := range reg.GetHooks() {
 			if info.Name == "wildcard-hook" {
 				found = true
 				assert.Equal(t, []string{"*"}, info.FromStates)
@@ -829,13 +829,13 @@ func TestGetHooks(t *testing.T) {
 		require.NoError(t, err)
 
 		// Mutate the returned slices
-		for info := range reg.GetHooks() {
+		for _, info := range reg.GetHooks() {
 			info.FromStates[0] = "MUTATED"
 			info.ToStates = append(info.ToStates, "EXTRA")
 		}
 
 		// Verify internal state is unchanged
-		for info := range reg.GetHooks() {
+		for _, info := range reg.GetHooks() {
 			assert.Equal(t, []string{"A"}, info.FromStates)
 			assert.Equal(t, []string{"B"}, info.ToStates)
 		}
@@ -881,7 +881,7 @@ func TestGetHooks(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		for info := range reg.GetHooks() {
+		for _, info := range reg.GetHooks() {
 			if info.Name == "multi-state-hook" {
 				assert.Equal(t, []string{"A", "B", "C"}, info.FromStates)
 				assert.Equal(t, []string{"D", "E"}, info.ToStates)
