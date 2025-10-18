@@ -120,8 +120,13 @@ func TestReadme_PreTransitionHooks(t *testing.T) {
 		return nil
 	}
 
-	err = registry.RegisterPreTransitionHook([]string{"offline"}, []string{"online"}, func(ctx context.Context, from, to string) error {
-		return establishConnection()
+	err = registry.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+		Name: "establish-connection",
+		From: []string{"offline"},
+		To:   []string{"online"},
+		Guard: func(ctx context.Context, from, to string) error {
+			return establishConnection()
+		},
 	})
 	require.NoError(t, err)
 
@@ -158,8 +163,13 @@ func TestReadme_PostTransitionHooks(t *testing.T) {
 		recordedTransitions = append(recordedTransitions, from+"->"+to)
 	}
 
-	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-		recordTransition(from, to)
+	err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name: "record-transitions",
+		From: []string{"*"},
+		To:   []string{"*"},
+		Action: func(ctx context.Context, from, to string) {
+			recordTransition(from, to)
+		},
 	})
 	require.NoError(t, err)
 
@@ -201,16 +211,26 @@ func TestReadme_CombiningCallbacks(t *testing.T) {
 	preHookCalled := false
 	postHookCalled := false
 
-	err = registry.RegisterPreTransitionHook([]string{"offline"}, []string{"online"}, func(ctx context.Context, from, to string) error {
-		logger.Info("validating transition", "from", from, "to", to)
-		preHookCalled = true
-		return nil
+	err = registry.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+		Name: "validate-offline-online",
+		From: []string{"offline"},
+		To:   []string{"online"},
+		Guard: func(ctx context.Context, from, to string) error {
+			logger.Info("validating transition", "from", from, "to", to)
+			preHookCalled = true
+			return nil
+		},
 	})
 	require.NoError(t, err)
 
-	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-		logger.Info("state changed", "from", from, "to", to)
-		postHookCalled = true
+	err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name: "notify-state-change",
+		From: []string{"*"},
+		To:   []string{"*"},
+		Action: func(ctx context.Context, from, to string) {
+			logger.Info("state changed", "from", from, "to", to)
+			postHookCalled = true
+		},
 	})
 	require.NoError(t, err)
 
@@ -248,19 +268,34 @@ func TestReadme_WildcardPatterns(t *testing.T) {
 	var postRunningTransitions []string
 	var allTransitions []string
 
-	err = registry.RegisterPreTransitionHook([]string{"*"}, []string{"error"}, func(ctx context.Context, from, to string) error {
-		preErrorTransitions = append(preErrorTransitions, from)
-		return nil
+	err = registry.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+		Name: "log-error-transitions",
+		From: []string{"*"},
+		To:   []string{"error"},
+		Guard: func(ctx context.Context, from, to string) error {
+			preErrorTransitions = append(preErrorTransitions, from)
+			return nil
+		},
 	})
 	require.NoError(t, err)
 
-	err = registry.RegisterPostTransitionHook([]string{"running"}, []string{"*"}, func(ctx context.Context, from, to string) {
-		postRunningTransitions = append(postRunningTransitions, to)
+	err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name: "log-leaving-running",
+		From: []string{"running"},
+		To:   []string{"*"},
+		Action: func(ctx context.Context, from, to string) {
+			postRunningTransitions = append(postRunningTransitions, to)
+		},
 	})
 	require.NoError(t, err)
 
-	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-		allTransitions = append(allTransitions, from+"->"+to)
+	err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name: "record-all-transitions",
+		From: []string{"*"},
+		To:   []string{"*"},
+		Action: func(ctx context.Context, from, to string) {
+			allTransitions = append(allTransitions, from+"->"+to)
+		},
 	})
 	require.NoError(t, err)
 
@@ -292,7 +327,12 @@ func TestReadme_SubscribingToStateChanges(t *testing.T) {
 		// 2. Register the broadcast hook
 		registry, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
 		require.NoError(t, err)
-		err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, manager.BroadcastHook)
+		err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+			Name:   "broadcast",
+			From:   []string{"*"},
+			To:     []string{"*"},
+			Action: manager.BroadcastHook,
+		})
 		require.NoError(t, err)
 
 		// 3. Create the FSM

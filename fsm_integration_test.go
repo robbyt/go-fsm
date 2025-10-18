@@ -26,13 +26,23 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
-		err = reg.RegisterPreTransitionHook([]string{transitions.StatusNew}, []string{transitions.StatusBooting}, func(ctx context.Context, from, to string) error {
-			executionOrder = append(executionOrder, "pre")
-			return nil
+		err = reg.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+			Name: "test-callback-order-pre",
+			From: []string{transitions.StatusNew},
+			To:   []string{transitions.StatusBooting},
+			Guard: func(ctx context.Context, from, to string) error {
+				executionOrder = append(executionOrder, "pre")
+				return nil
+			},
 		})
 		require.NoError(t, err)
-		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-			executionOrder = append(executionOrder, "post")
+		err = reg.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+			Name: "test-callback-order-post",
+			From: []string{"*"},
+			To:   []string{"*"},
+			Action: func(ctx context.Context, from, to string) {
+				executionOrder = append(executionOrder, "post")
+			},
 		})
 		require.NoError(t, err)
 
@@ -56,19 +66,34 @@ func TestCallbackOrderingIntegration(t *testing.T) {
 			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
-		err = reg.RegisterPreTransitionHook([]string{transitions.StatusNew}, []string{transitions.StatusBooting}, func(ctx context.Context, from, to string) error {
-			order = append(order, 1)
-			return nil
+		err = reg.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+			Name: "test-fifo-order-1",
+			From: []string{transitions.StatusNew},
+			To:   []string{transitions.StatusBooting},
+			Guard: func(ctx context.Context, from, to string) error {
+				order = append(order, 1)
+				return nil
+			},
 		})
 		require.NoError(t, err)
-		err = reg.RegisterPreTransitionHook([]string{transitions.StatusNew}, []string{transitions.StatusBooting}, func(ctx context.Context, from, to string) error {
-			order = append(order, 2)
-			return nil
+		err = reg.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+			Name: "test-fifo-order-2",
+			From: []string{transitions.StatusNew},
+			To:   []string{transitions.StatusBooting},
+			Guard: func(ctx context.Context, from, to string) error {
+				order = append(order, 2)
+				return nil
+			},
 		})
 		require.NoError(t, err)
-		err = reg.RegisterPreTransitionHook([]string{transitions.StatusNew}, []string{transitions.StatusBooting}, func(ctx context.Context, from, to string) error {
-			order = append(order, 3)
-			return nil
+		err = reg.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+			Name: "test-fifo-order-3",
+			From: []string{transitions.StatusNew},
+			To:   []string{transitions.StatusBooting},
+			Guard: func(ctx context.Context, from, to string) error {
+				order = append(order, 3)
+				return nil
+			},
 		})
 		require.NoError(t, err)
 
@@ -95,8 +120,13 @@ func TestPostTransitionHookIntegration(t *testing.T) {
 			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
-		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, func(ctx context.Context, from, to string) {
-			hookCallCount++
+		err = reg.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+			Name: "test-post-hook-call-count",
+			From: []string{"*"},
+			To:   []string{"*"},
+			Action: func(ctx context.Context, from, to string) {
+				hookCallCount++
+			},
 		})
 		require.NoError(t, err)
 
@@ -135,7 +165,12 @@ func TestBroadcastMechanismIntegration(t *testing.T) {
 		broadcastManager := broadcast.NewManager(slog.Default().Handler())
 
 		// Manually register broadcast hook
-		err = reg.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
+		err = reg.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+			Name:   "test-broadcast-mechanism",
+			From:   []string{"*"},
+			To:     []string{"*"},
+			Action: broadcastManager.BroadcastHook,
+		})
 		require.NoError(t, err)
 
 		ctx, cancel := context.WithCancel(t.Context())
@@ -176,8 +211,13 @@ func TestPanicRecoveryIntegration(t *testing.T) {
 			hooks.WithTransitions(transitions.Typical),
 		)
 		require.NoError(t, err)
-		err = reg.RegisterPreTransitionHook([]string{transitions.StatusNew}, []string{transitions.StatusBooting}, func(ctx context.Context, from, to string) error {
-			panic("transition panic")
+		err = reg.RegisterPreTransitionHook(hooks.PreTransitionHookConfig{
+			Name: "test-panic-recovery-pre",
+			From: []string{transitions.StatusNew},
+			To:   []string{transitions.StatusBooting},
+			Guard: func(ctx context.Context, from, to string) error {
+				panic("transition panic")
+			},
 		})
 		require.NoError(t, err)
 
@@ -443,7 +483,12 @@ func TestStateChangeNotificationsIntegration(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
+		err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+			Name:   "test-state-change-broadcast",
+			From:   []string{"*"},
+			To:     []string{"*"},
+			Action: broadcastManager.BroadcastHook,
+		})
 		require.NoError(t, err)
 
 		machine, err := fsm.New(transitions.StatusNew, transitions.Typical,
@@ -507,7 +552,12 @@ func TestBroadcastModesIntegration(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
+			err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+				Name:   "test-broadcast-mode",
+				From:   []string{"*"},
+				To:     []string{"*"},
+				Action: broadcastManager.BroadcastHook,
+			})
 			require.NoError(t, err)
 
 			machine, err := fsm.New(transitions.StatusNew, transitions.Typical,

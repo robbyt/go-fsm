@@ -55,7 +55,12 @@ func run(ctx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machi
 
 	// Create standalone broadcast manager, and register the hook with the callback registry
 	broadcastManager := broadcast.NewManager(logger.Handler())
-	err = registry.RegisterPostTransitionHook([]string{"*"}, []string{"*"}, broadcastManager.BroadcastHook)
+	err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name:   "broadcast",
+		From:   []string{"*"},
+		To:     []string{"*"},
+		Action: broadcastManager.BroadcastHook,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to register broadcast hook: %w", err)
 	}
