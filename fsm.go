@@ -37,13 +37,11 @@ package fsm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 
-	"github.com/robbyt/go-fsm/v2/hooks"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
@@ -53,33 +51,15 @@ type transitionDB interface {
 	IsTransitionAllowed(from, to string) bool
 }
 
-// transitionSerializer is an optional interface for transitions that support JSON serialization.
-// Only transitions implementing this interface can be marshaled to JSON.
-type transitionSerializer interface {
-	AsMap() map[string][]string
-}
-
-// hookSerializer is an optional interface for callback executors that support JSON serialization.
-// Only callback executors implementing this interface will have hooks included in JSON output.
-type hookSerializer interface {
-	GetHooks() []hooks.HookInfo
-}
-
 // Machine represents a finite state machine that tracks its current state
 // and manages state transitions.
 type Machine struct {
-	mutex       sync.RWMutex
-	state       atomic.Value
-	transitions transitionDB
-	logger      *slog.Logger
-	callbacks   CallbackExecutor
-}
+	mutex sync.RWMutex
+	state atomic.Value
 
-// persistentState is used for JSON marshaling/unmarshaling.
-type persistentState struct {
-	State       string              `json:"state"`
-	Transitions map[string][]string `json:"transitions"`
-	Hooks       []hooks.HookInfo    `json:"hooks,omitempty"`
+	transitions transitionDB
+	callbacks   CallbackExecutor
+	logger      *slog.Logger
 }
 
 // New creates a finite state machine with the specified initial state and transitions.
@@ -154,90 +134,6 @@ func NewSimple(
 	return New(initialState, trans, opts...)
 }
 
-// NewFromJSON creates a new FSM by deserializing from JSON.
-// The JSON must contain state and transitions fields. Any hooks in the JSON are ignored with a warning.
-// Options can be provided to configure logger and callback registry after deserialization.
-//
-// Example usage:
-//
-//	jsonData := []byte(`{"state":"running","transitions":{"running":["stopped"],"stopped":[]}}`)
-//	fsm, err := fsm.NewFromJSON(jsonData, fsm.WithLogger(logger))
-func NewFromJSON(data []byte, opts ...Option) (*Machine, error) {
-	var pState persistentState
-	if err := json.Unmarshal(data, &pState); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal FSM: %w", err)
-	}
-
-	if pState.State == "" {
-		return nil, ErrEmptyState
-	}
-
-	if len(pState.Transitions) == 0 {
-		return nil, ErrEmptyTransitions
-	}
-
-	// Create transitions.Config from the map
-	transConfig, err := transitions.New(pState.Transitions)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidJSONTransitions, err)
-	}
-
-	// Validate that the state exists in transitions
-	if !transConfig.HasState(pState.State) {
-		return nil, fmt.Errorf("%w: state '%s' is not defined in transitions", ErrInvalidConfiguration, pState.State)
-	}
-
-	// Create the FSM using the standard constructor
-	fsm, err := New(pState.State, transConfig, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	// Warn if hooks were present in JSON
-	if len(pState.Hooks) > 0 {
-		fsm.logger.Warn("hooks from JSON will be dropped and must be re-registered",
-			"hook_count", len(pState.Hooks))
-	}
-
-	return fsm, nil
-}
-
-// MarshalJSON implements the json.Marshaler interface.
-// It serializes the current state, all transitions, and registered hooks.
-// Transitions must implement transitionSerializer interface to be marshaled.
-func (fsm *Machine) MarshalJSON() ([]byte, error) {
-	fsm.mutex.RLock()
-	defer fsm.mutex.RUnlock()
-
-	currentState := fsm.GetState()
-
-	// Get transitions as a map via optional serialization interface
-	serializer, ok := fsm.transitions.(transitionSerializer)
-	if !ok {
-		return nil, fmt.Errorf("transitions do not implement transitionSerializer interface, cannot marshal to JSON")
-	}
-	transitionsMap := serializer.AsMap()
-
-	pState := persistentState{
-		State:       currentState,
-		Transitions: transitionsMap,
-	}
-
-	// Get hooks if a registry is configured and supports serialization
-	if fsm.callbacks != nil {
-		if hookSer, ok := fsm.callbacks.(hookSerializer); ok {
-			pState.Hooks = hookSer.GetHooks()
-		}
-	}
-
-	jsonData, err := json.Marshal(pState)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal FSM state: %w", err)
-	}
-
-	return jsonData, nil
-}
-
 // GetState returns the current state of the finite state machine.
 func (fsm *Machine) GetState() string {
 	return fsm.state.Load().(string)
@@ -248,12 +144,6 @@ func (fsm *Machine) GetAllStates() []string {
 	fsm.mutex.RLock()
 	defer fsm.mutex.RUnlock()
 	return fsm.transitions.GetAllStates()
-}
-
-// setState updates the FSM's state atomically.
-// Assumes the caller holds the write lock.
-func (fsm *Machine) setState(state string) {
-	fsm.state.Store(state)
 }
 
 // SetState updates the FSM's state, bypassing transition rules and pre-transition hooks.
@@ -291,12 +181,25 @@ func (fsm *Machine) SetStateWithContext(ctx context.Context, state string) error
 	return nil
 }
 
+// setState updates the FSM's state atomically.
+// Assumes the caller holds the write lock.
+func (fsm *Machine) setState(state string) {
+	fsm.state.Store(state)
+}
+
 // Transition changes the FSM's state to toState if the transition is allowed.
 // Returns an error if the transition is not permitted.
 func (fsm *Machine) Transition(toState string) error {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 	return fsm.transition(context.Background(), toState)
+}
+
+// TransitionBool returns true if the transition to toState succeeds, false otherwise.
+func (fsm *Machine) TransitionBool(toState string) bool {
+	fsm.mutex.Lock()
+	defer fsm.mutex.Unlock()
+	return fsm.transition(context.Background(), toState) == nil
 }
 
 // TransitionWithContext changes the FSM's state to toState with a context.
@@ -306,13 +209,6 @@ func (fsm *Machine) TransitionWithContext(ctx context.Context, toState string) e
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 	return fsm.transition(ctx, toState)
-}
-
-// TransitionBool returns true if the transition to toState succeeds, false otherwise.
-func (fsm *Machine) TransitionBool(toState string) bool {
-	fsm.mutex.Lock()
-	defer fsm.mutex.Unlock()
-	return fsm.transition(context.Background(), toState) == nil
 }
 
 // TransitionBoolWithContext returns true if the transition to toState succeeds with a context, false otherwise.
@@ -353,33 +249,35 @@ func (fsm *Machine) TransitionIfCurrentStateWithContext(ctx context.Context, fro
 // The context is passed to all hooks for request-scoped values, tracing, and cancellation handling.
 // Hooks are responsible for checking context cancellation themselves if needed.
 func (fsm *Machine) transition(ctx context.Context, toState string) error {
-	// Check if context is already canceled before starting transition
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("transition canceled: %w", err)
 	}
 
 	currentState := fsm.GetState()
-
 	if !fsm.transitions.IsTransitionAllowed(currentState, toState) {
 		return fmt.Errorf(
 			"%w: transition from '%s' to '%s' is not allowed",
 			ErrInvalidStateTransition,
-			currentState,
-			toState,
+			currentState, toState,
 		)
 	}
 
 	if fsm.callbacks != nil {
+		fsm.logger.Debug("Executing pre-transition hooks...", "from", currentState, "to", toState)
 		if err := fsm.callbacks.ExecutePreTransitionHooks(ctx, currentState, toState); err != nil {
+			fsm.logger.Debug("Pre-transition hooks failed, aborting the transition", "from", currentState, "to", toState, "error", err)
 			return err
 		}
+		fsm.logger.Debug("Pre-transition hooks completed", "from", currentState, "to", toState)
 	}
 
 	fsm.setState(toState)
 	fsm.logger.Debug("Transition successful", "from", currentState, "to", toState)
 
 	if fsm.callbacks != nil {
+		fsm.logger.Debug("Executing post-transition hooks...", "from", currentState, "to", toState)
 		fsm.callbacks.ExecutePostTransitionHooks(ctx, currentState, toState)
+		fsm.logger.Debug("Post-transition hooks completed", "from", currentState, "to", toState)
 	}
 
 	return nil
