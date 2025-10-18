@@ -78,6 +78,14 @@ func (e *hookEntry) hasWildcardPattern() bool {
 		slices.Contains(e.toStates, WildcardStatePattern)
 }
 
+// matches returns true if this hook should execute for the given transition.
+// A hook matches if both its fromStates and toStates patterns match the transition.
+func (e *hookEntry) matches(from, to string) bool {
+	fromMatches := slices.Contains(e.fromStates, WildcardStatePattern) || slices.Contains(e.fromStates, from)
+	toMatches := slices.Contains(e.toStates, WildcardStatePattern) || slices.Contains(e.toStates, to)
+	return fromMatches && toMatches
+}
+
 // Registry executes hooks synchronously in FIFO order.
 // It handles panic recovery and error wrapping for all hook executions.
 //
@@ -138,7 +146,7 @@ func (r *Registry) ExecutePreTransitionHooks(ctx context.Context, from, to strin
 	allEntries := make([]*hookEntry, 0, len(concreteEntries)+len(wildcardHooks))
 	allEntries = append(allEntries, concreteEntries...)
 	for _, entry := range wildcardHooks {
-		if matchesPattern(entry.fromStates, from) && matchesPattern(entry.toStates, to) {
+		if entry.matches(from, to) {
 			allEntries = append(allEntries, entry)
 		}
 	}
@@ -178,7 +186,7 @@ func (r *Registry) ExecutePostTransitionHooks(ctx context.Context, from, to stri
 	allEntries := make([]*hookEntry, 0, len(concreteEntries)+len(wildcardHooks))
 	allEntries = append(allEntries, concreteEntries...)
 	for _, entry := range wildcardHooks {
-		if matchesPattern(entry.fromStates, from) && matchesPattern(entry.toStates, to) {
+		if entry.matches(from, to) {
 			allEntries = append(allEntries, entry)
 		}
 	}
@@ -389,12 +397,6 @@ func (r *Registry) buildConcreteIndexKeys(fromPatterns, toPatterns []string) ([]
 	}
 
 	return keys, nil
-}
-
-// matchesPattern checks if a state matches any pattern in the list.
-// Returns true if patterns contains "*" (wildcard) or the specific state.
-func matchesPattern(patterns []string, state string) bool {
-	return slices.Contains(patterns, WildcardStatePattern) || slices.Contains(patterns, state)
 }
 
 // safeCallGuard executes a guard with panic recovery.
