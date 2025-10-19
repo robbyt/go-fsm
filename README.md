@@ -376,8 +376,13 @@ func main() {
 
 	// 4. Start listener in a goroutine
 	go func() {
-		for state := range stateChan {
-			fmt.Println("State Update:", state)
+		for {
+			select {
+			case state := <-stateChan:
+				fmt.Println("State Update:", state)
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 

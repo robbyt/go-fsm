@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/robbyt/go-fsm/v2/hooks"
@@ -810,5 +811,52 @@ func TestFSM_GetStateChan(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, "state2", <-c)
+	})
+
+	t.Run("Success: no goroutine leak with synctest", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mockDB := newMockTransitionDB(map[string][]string{
+				"state1": {"state2"},
+				"state2": {},
+			})
+
+			registry, err := hooks.NewRegistry(
+				hooks.WithTransitions(transitions.MustNew(map[string][]string{
+					"state1": {"state2"},
+					"state2": {},
+				})),
+			)
+			require.NoError(t, err)
+
+			fsm, err := New("state1", mockDB, WithCallbackRegistry(registry))
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			c := make(chan string, 10)
+			err = fsm.GetStateChan(ctx, c)
+			require.NoError(t, err)
+
+			// Receive states using select to avoid goroutine leak
+			select {
+			case state := <-c:
+				assert.Equal(t, "state1", state)
+			case <-time.After(1 * time.Second):
+				t.Fatal("timeout waiting for initial state")
+			}
+
+			err = fsm.Transition("state2")
+			require.NoError(t, err)
+
+			select {
+			case state := <-c:
+				assert.Equal(t, "state2", state)
+			case <-time.After(1 * time.Second):
+				t.Fatal("timeout waiting for state2")
+			}
+
+			// synctest will detect goroutine leaks if we don't handle cleanup correctly
+		})
 	})
 }

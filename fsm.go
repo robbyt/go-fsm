@@ -339,9 +339,16 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 //	    return err
 //	}
 //
-//	for state := range stateChan {
-//	    log.Printf("State: %s", state)
-//	}
+//	go func() {
+//	    for {
+//	        select {
+//	        case state := <-stateChan:
+//	            log.Printf("State: %s", state)
+//	        case <-ctx.Done():
+//	            return
+//	        }
+//	    }
+//	}()
 func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 	if ctx == nil {
 		return fmt.Errorf("context cannot be nil")

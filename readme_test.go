@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/robbyt/go-fsm/v2/hooks"
-	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -321,55 +320,44 @@ func TestReadme_SubscribingToStateChanges(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context()) // Use t.Context() for synctest
 		defer cancel()
 
-		// 1. Create a broadcast manager
-		manager := broadcast.NewManager(logger.Handler())
-
-		// 2. Register the broadcast hook
-		registry, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
-		require.NoError(t, err)
-		err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-			Name:   "broadcast",
-			From:   []string{"*"},
-			To:     []string{"*"},
-			Action: manager.BroadcastHook,
-		})
+		// 1. Create hooks registry with transitions (required for broadcast support)
+		registry, err := hooks.NewRegistry(
+			hooks.WithLogHandler(logger.Handler()),
+			hooks.WithTransitions(transitions.Typical),
+		)
 		require.NoError(t, err)
 
-		// 3. Create the FSM
+		// 2. Create FSM with callback registry
 		machine, err := New(
 			transitions.StatusNew,
 			transitions.Typical,
+			WithLogHandler(logger.Handler()),
 			WithCallbackRegistry(registry),
 		)
 		require.NoError(t, err)
 
-		// 4. Get a channel
-		stateChan, err := manager.GetStateChan(ctx, broadcast.WithTimeout(-1))
+		// 3. Create a channel and register it
+		stateChan := make(chan string, 10)
+		err = machine.GetStateChan(ctx, stateChan)
 		require.NoError(t, err)
 
-		// 5. Start a listener
-		var receivedStates []string
-		go func() {
-			for state := range stateChan {
-				receivedStates = append(receivedStates, state)
-			}
-		}()
+		// 4. Should receive initial state immediately
+		synctest.Wait()
+		state := <-stateChan
+		assert.Equal(t, transitions.StatusNew, state)
 
-		// The manager does not broadcast the initial state; you can do it manually
-		manager.Broadcast(machine.GetState())
-		synctest.Wait() // Wait for the first broadcast to be processed
-
-		// 6. Transitions will now broadcast
+		// 5. Transitions automatically broadcast to all subscribers
 		err = machine.Transition(transitions.StatusBooting)
 		require.NoError(t, err)
-		synctest.Wait() // Wait for the second
+		synctest.Wait()
+		state = <-stateChan
+		assert.Equal(t, transitions.StatusBooting, state)
 
 		err = machine.Transition(transitions.StatusRunning)
 		require.NoError(t, err)
-		synctest.Wait() // Wait for the third
-
-		expected := []string{transitions.StatusNew, transitions.StatusBooting, transitions.StatusRunning}
-		assert.Equal(t, expected, receivedStates)
+		synctest.Wait()
+		state = <-stateChan
+		assert.Equal(t, transitions.StatusRunning, state)
 	})
 }
 
