@@ -16,7 +16,11 @@ limitations under the License.
 
 package fsm
 
-import "context"
+import (
+	"context"
+
+	"github.com/robbyt/go-fsm/v2/hooks"
+)
 
 // CallbackExecutor defines the interface for executing state transition callbacks.
 // Implementations handle iteration, panic recovery, and error wrapping internally.
@@ -32,4 +36,12 @@ type CallbackExecutor interface {
 	// Panics are recovered and logged but do not propagate.
 	// The context is passed to all hooks, allowing access to request-scoped values.
 	ExecutePostTransitionHooks(ctx context.Context, from, to string)
+}
+
+// HookRegistrar extends CallbackExecutor with dynamic hook registration.
+// This interface is used by GetStateChan to register broadcast hooks dynamically.
+// The hooks.Registry type implements this interface.
+type HookRegistrar interface {
+	RegisterPostTransitionHook(config hooks.PostTransitionHookConfig) error
+	RegisterPreTransitionHook(config hooks.PreTransitionHookConfig) error
 }

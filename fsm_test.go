@@ -6,7 +6,10 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -613,5 +616,199 @@ func TestFSM_TransitionWithContext(t *testing.T) {
 		require.Len(t, receivedContexts, 2)
 		assert.Equal(t, "req-456", receivedContexts[0].Value(requestIDKey))
 		assert.Equal(t, "req-456", receivedContexts[1].Value(requestIDKey))
+	})
+}
+
+func TestFSM_GetStateChan(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Error: nil context", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+		})
+
+		fsm, err := New("state1", mockDB)
+		require.NoError(t, err)
+
+		c := make(chan string, 1)
+		//nolint:staticcheck // Intentionally testing nil context error
+		err = fsm.GetStateChan(nil, c)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "context cannot be nil")
+	})
+
+	t.Run("Error: nil callbacks", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+		})
+
+		fsm, err := New("state1", mockDB)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		c := make(chan string, 1)
+		err = fsm.GetStateChan(ctx, c)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "GetStateChan requires a callback registry")
+	})
+
+	t.Run("Error: callbacks not HookRegistrar", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+		})
+		mockCallbacks := newMockCallbackExecutor()
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		c := make(chan string, 1)
+		err = fsm.GetStateChan(ctx, c)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires a callback registry that supports dynamic hook registration")
+	})
+
+	t.Run("Error: hook registration failure without transitions", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+		})
+
+		// Create registry WITHOUT WithTransitions - wildcard "*" will fail
+		registry, err := hooks.NewRegistry()
+		require.NoError(t, err)
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(registry))
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		c := make(chan string, 1)
+		err = fsm.GetStateChan(ctx, c)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "wildcard")
+	})
+
+	t.Run("Success: basic usage with buffered channel", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2", "state3"},
+			"state2": {"state3"},
+			"state3": {},
+		})
+
+		registry, err := hooks.NewRegistry(
+			hooks.WithTransitions(transitions.MustNew(map[string][]string{
+				"state1": {"state2", "state3"},
+				"state2": {"state3"},
+				"state3": {},
+			})),
+		)
+		require.NoError(t, err)
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(registry))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		c := make(chan string, 10)
+		err = fsm.GetStateChan(ctx, c)
+		require.NoError(t, err)
+
+		// Should receive initial state immediately
+		initialState := <-c
+		assert.Equal(t, "state1", initialState)
+
+		// Transition and verify broadcast
+		err = fsm.Transition("state2")
+		require.NoError(t, err)
+
+		newState := <-c
+		assert.Equal(t, "state2", newState)
+
+		// Another transition
+		err = fsm.Transition("state3")
+		require.NoError(t, err)
+
+		finalState := <-c
+		assert.Equal(t, "state3", finalState)
+	})
+
+	t.Run("Success: multiple channels receive broadcasts", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+
+		registry, err := hooks.NewRegistry(
+			hooks.WithTransitions(transitions.MustNew(map[string][]string{
+				"state1": {"state2"},
+				"state2": {},
+			})),
+		)
+		require.NoError(t, err)
+
+		fsm, err := New("state1", mockDB, WithCallbackRegistry(registry))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Register first channel
+		c1 := make(chan string, 10)
+		err = fsm.GetStateChan(ctx, c1)
+		require.NoError(t, err)
+
+		// Register second channel
+		c2 := make(chan string, 10)
+		err = fsm.GetStateChan(ctx, c2)
+		require.NoError(t, err)
+
+		// Both should receive initial state
+		assert.Equal(t, "state1", <-c1)
+		assert.Equal(t, "state1", <-c2)
+
+		// Transition
+		err = fsm.Transition("state2")
+		require.NoError(t, err)
+
+		// Both should receive new state
+		assert.Equal(t, "state2", <-c1)
+		assert.Equal(t, "state2", <-c2)
+	})
+
+	t.Run("Success: custom broadcast timeout", func(t *testing.T) {
+		mockDB := newMockTransitionDB(map[string][]string{
+			"state1": {"state2"},
+			"state2": {},
+		})
+
+		registry, err := hooks.NewRegistry(
+			hooks.WithTransitions(transitions.MustNew(map[string][]string{
+				"state1": {"state2"},
+				"state2": {},
+			})),
+		)
+		require.NoError(t, err)
+
+		// Test with custom timeout
+		fsm, err := New("state1", mockDB,
+			WithCallbackRegistry(registry),
+			WithBroadcastTimeout(500*time.Millisecond),
+		)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		c := make(chan string, 10)
+		err = fsm.GetStateChan(ctx, c)
+		require.NoError(t, err)
+
+		// Should work normally with custom timeout
+		assert.Equal(t, "state1", <-c)
+
+		err = fsm.Transition("state2")
+		require.NoError(t, err)
+
+		assert.Equal(t, "state2", <-c)
 	})
 }
