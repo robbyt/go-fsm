@@ -2,6 +2,8 @@
 
 Provides state change notifications through channels when registered as a post-transition hook.
 
+**Note:** For most use cases, use the built-in `machine.GetStateChan()` method instead of manually configuring a broadcast manager. This package is for advanced scenarios requiring custom broadcast logic, multiple managers, or fine-grained hook control. See the [main README](../../README.md#subscribing-to-state-changes) for the simpler approach.
+
 ## Usage
 
 ```go
@@ -16,11 +18,12 @@ import (
 )
 
 // Create broadcast manager
-manager := broadcast.NewManager(slog.Default().Handler())
+handler := slog.Default().Handler()
+manager := broadcast.NewManager(handler)
 
 // Register as post-transition hook
 registry, _ := hooks.NewRegistry(
-	hooks.WithLogger(slog.Default()),
+	hooks.WithLogHandler(handler),
 	hooks.WithTransitions(transitions.Typical),
 )
 registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{

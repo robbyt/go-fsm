@@ -334,20 +334,20 @@ err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
 
 ### Subscribing to State Changes
 
-For applications that need to react to state changes, you can use the `hooks/broadcast` package to subscribe to notifications. This is useful for updating UI, feeding a monitoring system, or other event-driven tasks.
+Subscribe to state change notifications using channels. This is useful for updating UI, monitoring systems, or event-driven tasks.
 
-First, create a `broadcast.Manager` and register its `BroadcastHook` as a post-transition hook. Then, create a channel to receive state updates.
+#### Simple Method (Recommended)
+
+Use the built-in `GetStateChan()` method for state notifications:
 
 ```go
 import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/robbyt/go-fsm/v2"
 	"github.com/robbyt/go-fsm/v2/hooks"
-	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
@@ -356,47 +356,61 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Create a broadcast manager
-	manager := broadcast.NewManager(logger.Handler())
+	// 1. Create hooks registry with transitions (required for broadcast support)
+	registry, _ := hooks.NewRegistry(
+		hooks.WithLogHandler(logger.Handler()),
+		hooks.WithTransitions(transitions.Typical),
+	)
 
-	// 2. Register the broadcast hook to run after all transitions
-	registry, _ := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
-	_ = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-		Name:   "broadcast",
-		From:   []string{"*"},
-		To:     []string{"*"},
-		Action: manager.BroadcastHook,
-	})
-
-	// 3. Create the FSM with the callback registry
+	// 2. Create FSM with callback registry
 	machine, _ := fsm.New(
 		transitions.StatusNew,
 		transitions.Typical,
+		fsm.WithLogHandler(logger.Handler()),
 		fsm.WithCallbackRegistry(registry),
 	)
 
-	// 4. Get a channel to receive state updates
-	// Use a guaranteed delivery for this example
-	stateChan, _ := manager.GetStateChan(ctx, broadcast.WithTimeout(-1))
+	// 3. Create a channel and register it
+	stateChan := make(chan string, 10)
+	_ = machine.GetStateChan(ctx, stateChan)
 
-	// 5. Start a listener in a goroutine
+	// 4. Start listener in a goroutine
 	go func() {
 		for state := range stateChan {
-			fmt.Println("Received State Update:", state)
+			fmt.Println("State Update:", state)
 		}
-		fmt.Println("Subscriber channel closed.")
 	}()
 
-	// The manager does not broadcast the initial state; you can do it manually
-	manager.Broadcast(machine.GetState())
-
-	// 6. Transitions will now broadcast their new state to all subscribers
+	// 5. Transitions automatically broadcast to all subscribers
 	_ = machine.Transition(transitions.StatusBooting)
 	_ = machine.Transition(transitions.StatusRunning)
-
-	// In production, the listener goroutine would typically run for the lifetime of your application.
 }
 ```
+
+The `GetStateChan()` method:
+- Automatically sets up broadcast management
+- Sends the current state immediately upon subscription
+- Unsubscribes the channel when the context is cancelled
+- Supports multiple concurrent subscribers
+
+Configure broadcast timeout behavior with `fsm.WithBroadcastTimeout()`:
+```go
+machine, _ := fsm.New(
+	transitions.StatusNew,
+	transitions.Typical,
+	fsm.WithBroadcastTimeout(5*time.Second), // timeout mode
+	fsm.WithCallbackRegistry(registry),
+)
+```
+
+Timeout values:
+- `0` (default: 100ms): best-effort delivery (non-blocking)
+- `> 0`: blocks up to duration, then drops message
+- `< 0`: guaranteed delivery (blocks indefinitely)
+
+#### Advanced: Custom Broadcast Manager
+
+For advanced use cases requiring custom broadcast logic, multiple broadcast managers, or fine-grained control over hook execution order, you can manually configure a `broadcast.Manager`. See the [broadcast package documentation](hooks/broadcast/README.md) for details.
 
 ### State Transitions
 
