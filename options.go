@@ -57,6 +57,10 @@ func WithLogHandler(handler slog.Handler) Option {
 }
 
 // WithBroadcastTimeout sets the default timeout for broadcast delivery when using GetStateChan.
+// This option only affects the built-in machine.GetStateChan() method. If you manually configure
+// a broadcast.Manager and hooks.Registry, configure the timeout via broadcast.WithTimeout()
+// when calling broadcastManager.GetStateChan() instead.
+//
 // The timeout controls how long broadcasts will wait when sending to subscriber channels:
 //   - timeout = 0: best-effort delivery (non-blocking, drops message if channel is full)
 //   - timeout > 0: blocks up to the specified duration, then drops the message
