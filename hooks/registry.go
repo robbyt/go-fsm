@@ -232,20 +232,7 @@ func (r *Registry) RegisterPreTransitionHook(config PreTransitionHookConfig) err
 		hookType:   HookTypePre,
 	}
 
-	keys, hasWildcard, err := r.registerHookEntry(config.Name, entry)
-	if err != nil {
-		return err
-	}
-
-	if hasWildcard {
-		r.preWildcardHooks = append(r.preWildcardHooks, entry)
-	} else {
-		for _, key := range keys {
-			r.preTransitionHooksIndex[key] = append(r.preTransitionHooksIndex[key], entry)
-		}
-	}
-
-	return nil
+	return r.registerHookEntry(config.Name, entry)
 }
 
 // RegisterPostTransitionHook registers a post-transition hook for transitions matching the patterns.
@@ -262,20 +249,7 @@ func (r *Registry) RegisterPostTransitionHook(config PostTransitionHookConfig) e
 		hookType:   HookTypePost,
 	}
 
-	keys, hasWildcard, err := r.registerHookEntry(config.Name, entry)
-	if err != nil {
-		return err
-	}
-
-	if hasWildcard {
-		r.postWildcardHooks = append(r.postWildcardHooks, entry)
-	} else {
-		for _, key := range keys {
-			r.postTransitionHooksIndex[key] = append(r.postTransitionHooksIndex[key], entry)
-		}
-	}
-
-	return nil
+	return r.registerHookEntry(config.Name, entry)
 }
 
 // RemoveHook removes a hook by name from all registrations.
@@ -289,12 +263,13 @@ func (r *Registry) RemoveHook(name string) error {
 	}
 
 	// Linear scan: remove the entry pointer from all transitions and wildcard slices
-	if entry.hookType == HookTypePre {
+	switch entry.hookType {
+	case HookTypePre:
 		for key := range r.preTransitionHooksIndex {
 			r.preTransitionHooksIndex[key] = entry.removeFrom(r.preTransitionHooksIndex[key])
 		}
 		r.preWildcardHooks = entry.removeFrom(r.preWildcardHooks)
-	} else {
+	case HookTypePost:
 		for key := range r.postTransitionHooksIndex {
 			r.postTransitionHooksIndex[key] = entry.removeFrom(r.postTransitionHooksIndex[key])
 		}
@@ -319,46 +294,67 @@ func (r *Registry) Clear() {
 	r.nextSeq = 0
 }
 
-// registerHookEntry performs common validation and stores a hookEntry for registration.
+// registerHookEntry validates and registers a hook entry.
 // Must be called while holding r.mu lock.
-// Returns index keys for concrete patterns, or hasWildcard=true for wildcard patterns.
-func (r *Registry) registerHookEntry(name string, entry *hookEntry) ([]transitionKey, bool, error) {
+// Performs all validation, state modification, and indexing in a single transactional operation.
+func (r *Registry) registerHookEntry(name string, entry *hookEntry) error {
+	// Phase 1: Validation (fail-fast)
 	if name == "" {
-		return nil, false, ErrHookNameEmpty
+		return ErrHookNameEmpty
 	}
 
 	if len(entry.fromStates) == 0 || len(entry.toStates) == 0 {
-		return nil, false, fmt.Errorf("from and to state lists cannot be empty")
+		return fmt.Errorf("from and to state lists cannot be empty")
 	}
 
 	if _, exists := r.hooks[name]; exists {
-		return nil, false, fmt.Errorf("%w: %s", ErrHookNameAlreadyExists, name)
+		return fmt.Errorf("%w: %s", ErrHookNameAlreadyExists, name)
 	}
 
-	// Assign registration sequence
+	// Type-specific validation
+	isWildcard := entry.hasWildcardPattern()
+	var keys []transitionKey
+	var err error
+
+	if isWildcard {
+		if r.transitions == nil {
+			return fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
+		}
+	} else {
+		// For concrete patterns, validate states and build index keys
+		keys, err = r.buildConcreteIndexKeys(entry.fromStates, entry.toStates)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Phase 2: Modify State
 	entry.registrationSeq = r.nextSeq
 	r.nextSeq++
-
-	// Check for wildcard patterns
-	if entry.hasWildcardPattern() {
-		// Wildcard hooks require a transition table
-		if r.transitions == nil {
-			return nil, false, fmt.Errorf("wildcard '*' cannot be used without state table (use WithTransitions option)")
-		}
-		entry.wildcardPresent = true
-		r.hooks[name] = entry
-		return nil, true, nil
-	}
-
-	// Concrete patterns: build index keys
-	entry.wildcardPresent = false
-	keys, err := r.buildConcreteIndexKeys(entry.fromStates, entry.toStates)
-	if err != nil {
-		return nil, false, err
-	}
-
+	entry.wildcardPresent = isWildcard
 	r.hooks[name] = entry
-	return keys, false, nil
+
+	// Phase 3: Index
+	switch entry.hookType {
+	case HookTypePre:
+		if isWildcard {
+			r.preWildcardHooks = append(r.preWildcardHooks, entry)
+		} else {
+			for _, key := range keys {
+				r.preTransitionHooksIndex[key] = append(r.preTransitionHooksIndex[key], entry)
+			}
+		}
+	case HookTypePost:
+		if isWildcard {
+			r.postWildcardHooks = append(r.postWildcardHooks, entry)
+		} else {
+			for _, key := range keys {
+				r.postTransitionHooksIndex[key] = append(r.postTransitionHooksIndex[key], entry)
+			}
+		}
+	}
+
+	return nil
 }
 
 // buildConcreteIndexKeys builds index keys from concrete pattern strings.
