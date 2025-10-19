@@ -11,8 +11,23 @@ This document provides a migration prompt for Large Language Models to help migr
 | **Logger Setup** | Required as first parameter | Optional via `fsm.WithLogHandler(handler)` |
 | **State Constants** | `fsm.StatusNew`, `fsm.StatusBooting`, etc. | `transitions.StatusNew`, `transitions.StatusBooting`, etc. |
 | **Transitions Type** | `map[string][]string` (also `fsm.TypicalTransitions`) | `*transitions.Config` (use `transitions.Typical`) |
-| **State Broadcasting** | `machine.GetStateChan(ctx)` method | Separate `broadcast.Manager` + hooks |
-| **Hooks/Callbacks** | Built into machine with `WithSyncTimeout`, etc. | Separate `hooks.Registry` with pre/post hooks |
+| **State Broadcasting** | `stateChan := machine.GetStateChan(ctx)` | `err := machine.GetStateChan(ctx, chan)` with `hooks.Registry` |
+| **Broadcast Timeout** | `fsm.WithSyncTimeout(duration)` | `fsm.WithBroadcastTimeout(duration)` option |
+| **Hooks/Callbacks** | Built into machine | Separate `hooks.Registry` with pre/post hooks |
+
+## What's New in v2
+
+**Key Feature:** v2 provides a **built-in helper method** for state broadcasting that's simpler than manual setup:
+
+- ✅ **One Method Call**: `machine.GetStateChan(ctx, chan)` handles everything
+- ✅ **Automatic Hook Registration**: Broadcast hook registered automatically on first call
+- ✅ **v1 Compatible**: Sends initial state immediately (just like v1)
+- ✅ **You Control the Channel**: Create buffered or unbuffered channels as needed
+- ✅ **Clean Error Handling**: Returns errors instead of panicking
+
+**Migration Impact**: Most codebases can use the built-in method instead of manually wiring up `broadcast.Manager` + `hooks.Registry`. This simplifies migration significantly.
+
+**When You Need Advanced Control**: You can use `broadcast.Manager` directly for custom broadcast logic, multiple managers, or fine-grained control over hook execution order.
 
 ## Migration Instructions for LLMs
 
@@ -152,7 +167,31 @@ machine, err := fsm.New(
 
 ### Step 7: Migrate GetStateChan Usage (Critical)
 
-This is the most complex change. v2 moves state broadcasting to a separate system.
+This changed significantly in v2. The v2 API provides a built-in helper method on the FSM.
+
+#### Decision Guide: Which Broadcasting Pattern Should You Use?
+
+```
+Do you need state change notifications?
+│
+├─ NO → Skip this step, use fsm.New() without hooks.Registry
+│
+└─ YES → Choose your approach:
+    │
+    ├─ SIMPLE (Recommended for 90% of use cases)
+    │  ✅ Use: machine.GetStateChan(ctx, chan)
+    │  ✅ When: Standard broadcasting, single FSM, v1 compatibility
+    │  ✅ Benefits: Automatic setup, simpler code, less boilerplate
+    │
+    └─ ADVANCED (Only when you need special control)
+       ✅ Use: broadcast.Manager directly
+       ✅ When: Multiple broadcast managers, custom delivery logic,
+               fine-grained hook ordering, or managing broadcasts
+               across multiple FSMs
+       ✅ Tradeoff: More code, manual hook registration
+```
+
+**👉 Start with the SIMPLE pattern below. Only use ADVANCED if you have specific requirements.**
 
 #### v1 Pattern:
 ```go
@@ -167,10 +206,45 @@ for state := range stateChan {
 }
 ```
 
-#### v2 Pattern:
+#### v2 Pattern (SIMPLE - Use This):
 ```go
-// v2 code - requires setup
+// v2 code - simpler pattern using built-in helper
 
+// 1. Create a hooks registry with transitions (required for broadcast)
+registry, err := hooks.NewRegistry(
+    hooks.WithLogHandler(handler),
+    hooks.WithTransitions(transitions.Typical),
+)
+
+// 2. Create FSM with the registry
+machine, err := fsm.New(
+    transitions.StatusNew,
+    transitions.Typical,
+    fsm.WithLogHandler(handler),
+    fsm.WithCallbackRegistry(registry),
+    fsm.WithBroadcastTimeout(5*time.Second), // Optional: configure broadcast timeout
+)
+
+// 3. Create your channel (you control buffer size)
+stateChan := make(chan string, 10)
+
+// 4. Register the channel with GetStateChan
+err = machine.GetStateChan(ctx, stateChan)
+if err != nil {
+    // Handle error
+}
+
+// Channel immediately receives current state (v1 compatible!)
+// Then receives all future state changes
+for state := range stateChan {
+    // Handle state
+}
+```
+
+#### v2 Pattern (Advanced - Using broadcast.Manager directly):
+If you need more control, you can still use the broadcast manager directly:
+
+```go
 // 1. Create a broadcast manager
 broadcastManager := broadcast.NewManager(handler)
 
@@ -199,7 +273,7 @@ machine, err := fsm.New(
 // 5. Get state channel
 stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithTimeout(5*time.Second))
 
-// 6. IMPORTANT: v2 does NOT send initial state automatically
+// 6. IMPORTANT: broadcast.Manager does NOT send initial state automatically
 // You must manually broadcast the initial state if needed (for v1 compatibility)
 broadcastManager.Broadcast(machine.GetState())
 
@@ -209,13 +283,13 @@ for state := range stateChan {
 }
 ```
 
-#### Critical Behavioral Difference:
+#### Key Changes from v1:
 
-**v1 behavior:** `GetStateChan()` immediately sends the current state to newly created channels.
-
-**v2 behavior:** `GetStateChan()` only receives future state changes. Initial state is NOT sent automatically.
-
-**For v1 compatibility:** After creating a channel, manually call `broadcastManager.Broadcast(machine.GetState())` to send the initial state.
+1. **Channel Creation**: You create and own the channel (control buffer size)
+2. **Registry Required**: Must use `hooks.Registry` with `WithTransitions()`
+3. **v1 Compatible**: `machine.GetStateChan()` sends initial state immediately (like v1)
+4. **Configurable Timeout**: Use `WithBroadcastTimeout()` option (replaces v1's `WithSyncTimeout`)
+5. **Error Handling**: Returns error instead of just returning a channel
 
 ### Step 8: Create Abstraction Layer (Recommended)
 
@@ -264,30 +338,20 @@ var TypicalTransitions = transitions.Typical
 // Machine wraps v2 FSM with v1-compatible API
 type Machine struct {
     *fsm.Machine
-    broadcastManager *broadcast.Manager
 }
 
 // GetStateChan maintains v1 behavior - sends current state immediately
 func (m *Machine) GetStateChan(ctx context.Context) <-chan string {
-    wrappedCh := make(chan string, 1)
+    ch := make(chan string, 10)
 
-    userCh, err := m.broadcastManager.GetStateChan(ctx)
+    err := m.Machine.GetStateChan(ctx, ch)
     if err != nil {
-        close(wrappedCh)
-        return wrappedCh
+        close(ch)
+        return ch
     }
 
-    // v1 compatibility: send current state immediately
-    wrappedCh <- m.GetState()
-
-    go func() {
-        defer close(wrappedCh)
-        for state := range userCh {
-            wrappedCh <- state
-        }
-    }()
-
-    return wrappedCh
+    // machine.GetStateChan already sends current state immediately (v1 compatible!)
+    return ch
 }
 
 // New creates a new FSM with v1-like API
@@ -296,18 +360,6 @@ func New(handler slog.Handler) (*Machine, error) {
         hooks.WithLogHandler(handler),
         hooks.WithTransitions(TypicalTransitions),
     )
-    if err != nil {
-        return nil, err
-    }
-
-    broadcastManager := broadcast.NewManager(handler)
-
-    err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-        Name:   "broadcast",
-        From:   []string{"*"},
-        To:     []string{"*"},
-        Action: broadcastManager.BroadcastHook,
-    })
     if err != nil {
         return nil, err
     }
@@ -323,8 +375,7 @@ func New(handler slog.Handler) (*Machine, error) {
     }
 
     return &Machine{
-        Machine:          f,
-        broadcastManager: broadcastManager,
+        Machine: f,
     }, nil
 }
 ```
@@ -446,8 +497,26 @@ machine, err := fsm.New(
 machine, err := fsm.New(handler, fsm.StatusNew, fsm.TypicalTransitions)
 stateChan := machine.GetStateChan(ctx)
 
-// v2 (see Step 7 for full pattern)
-// Requires broadcast.Manager setup + hooks registry
+// v2 - using built-in GetStateChan helper
+registry, err := hooks.NewRegistry(
+    hooks.WithLogHandler(handler),
+    hooks.WithTransitions(transitions.Typical),
+)
+
+machine, err := fsm.New(
+    transitions.StatusNew,
+    transitions.Typical,
+    fsm.WithLogHandler(handler),
+    fsm.WithCallbackRegistry(registry),
+)
+
+stateChan := make(chan string, 10)
+err = machine.GetStateChan(ctx, stateChan)
+
+// Use the channel
+for state := range stateChan {
+    // Handle state changes
+}
 ```
 
 ### Pattern 4: Custom Transitions with Type Safety
@@ -476,11 +545,11 @@ machine, err := fsm.New("draft", customTrans)
 ### Error: "cannot use map[string][]string as type transitionDB"
 **Solution:** Wrap map with `transitions.MustNew(yourMap)` or use `transitions.New(yourMap)`
 
-### Error: "GetStateChan undefined"
-**Solution:** Set up `broadcast.Manager` (see Step 7)
+### Error: "GetStateChan requires a callback registry"
+**Solution:** Use `fsm.WithCallbackRegistry(registry)` when creating the FSM. The registry must be created with `hooks.WithTransitions()` for wildcard support.
 
-### Tests fail: "expected state X, got state Y"
-**Solution:** Check if test expected immediate state broadcast from `GetStateChan`. In v2, manually broadcast initial state or use wrapper.
+### Error: "requires a callback registry that supports dynamic hook registration"
+**Solution:** Use `hooks.Registry` instead of a custom CallbackExecutor. The FSM's built-in `GetStateChan` requires the registry to support dynamic hook registration.
 
 ### Error: "wildcard '*' cannot be used without state table"
 **Solution:** When using wildcard hooks (`"*"`), you must pass `hooks.WithTransitions()` to the registry.
@@ -500,8 +569,8 @@ Use this checklist to verify your migration:
 - [ ] Replaced `fsm.StatusX` with `transitions.StatusX`
 - [ ] Replaced `fsm.TypicalTransitions` with `transitions.Typical`
 - [ ] Updated `fsm.New()` constructor calls (moved handler to options)
-- [ ] Migrated `GetStateChan()` to use `broadcast.Manager`
-- [ ] Handled initial state broadcast behavior difference
+- [ ] Migrated `GetStateChan()` to use `machine.GetStateChan(ctx, chan)` with hooks.Registry
+- [ ] Added `WithBroadcastTimeout()` option if custom timeout needed (replaces `WithSyncTimeout`)
 - [ ] **Created single abstraction constructor (if architecture supports it)**
 - [ ] Updated all tests
 - [ ] Verified with `go build ./...`

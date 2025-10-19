@@ -41,7 +41,10 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
@@ -60,6 +63,11 @@ type Machine struct {
 	transitions transitionDB
 	callbacks   CallbackExecutor
 	logger      *slog.Logger
+
+	broadcastManager  *broadcast.Manager
+	broadcastTimeout  time.Duration
+	stateChanSetup    sync.Once
+	stateChanSetupErr error
 }
 
 // New creates a finite state machine with the specified initial state and transitions.
@@ -99,8 +107,9 @@ func New(
 	}
 
 	m := &Machine{
-		transitions: trans,
-		logger:      slog.New(handler),
+		transitions:      trans,
+		logger:           slog.New(handler),
+		broadcastTimeout: 100 * time.Millisecond,
 	}
 	m.state.Store(initialState)
 
@@ -279,6 +288,99 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 		fsm.callbacks.ExecutePostTransitionHooks(ctx, currentState, toState)
 		fsm.logger.Debug("Post-transition hooks completed", "from", currentState, "to", toState)
 	}
+
+	return nil
+}
+
+// GetStateChan registers a channel to receive state change notifications and sends
+// the current state immediately, blocking on sending the initial state if the channel buffer is full.
+// Use a buffered channel to avoid blocking.
+//
+// This method requires the FSM to be configured with a hooks.Registry (via WithCallbackRegistry).
+// The registry must be created with WithTransitions() to support wildcard pattern matching.
+// Returns an error if the callback executor does not support dynamic hook registration.
+//
+// The channel will automatically receive all future state transitions until the context
+// is cancelled, at which point it is automatically unsubscribed from receiving further broadcasts.
+// The channel is NOT closed; the caller maintains ownership and is responsible for channel lifecycle.
+//
+// GetStateChan can be called multiple times with different channels and contexts. All channels
+// share the same broadcast manager, which is lazily initialized only once upon the first call.
+//
+// Broadcast delivery behavior is controlled by the timeout configured via WithBroadcastTimeout:
+//   - timeout = 0: best-effort delivery (non-blocking, drops if channel is full)
+//   - timeout > 0: blocks up to the timeout duration, then drops the message
+//   - timeout < 0: guaranteed delivery (blocks indefinitely until delivered)
+//
+// Default timeout is 100ms if not configured.
+//
+// The channel must be bidirectional (chan string, not <-chan string) to allow the FSM
+// to send state updates. The caller maintains ownership of the channel and controls
+// its buffer size and lifecycle.
+//
+// Example:
+//
+//	registry, _ := hooks.NewRegistry(
+//	    hooks.WithLogHandler(handler),
+//	    hooks.WithTransitions(transitions.Typical),
+//	)
+//
+//	machine, _ := fsm.New(
+//	    transitions.StatusNew,
+//	    transitions.Typical,
+//	    fsm.WithCallbackRegistry(registry),
+//	)
+//
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//
+//	stateChan := make(chan string, 10)
+//	if err := machine.GetStateChan(ctx, stateChan); err != nil {
+//	    return err
+//	}
+//
+//	for state := range stateChan {
+//	    log.Printf("State: %s", state)
+//	}
+func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
+	if ctx == nil {
+		return fmt.Errorf("context cannot be nil")
+	}
+
+	if fsm.callbacks == nil {
+		return fmt.Errorf("GetStateChan requires a callback registry")
+	}
+
+	registrar, ok := fsm.callbacks.(HookRegistrar)
+	if !ok {
+		return fmt.Errorf("GetStateChan requires a callback registry that supports dynamic hook registration")
+	}
+
+	fsm.stateChanSetup.Do(func() {
+		fsm.broadcastManager = broadcast.NewManager(fsm.logger.Handler())
+
+		fsm.stateChanSetupErr = registrar.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+			Name:   "fsm.GetStateChan",
+			From:   []string{"*"},
+			To:     []string{"*"},
+			Action: fsm.broadcastManager.BroadcastHook,
+		})
+	})
+
+	if fsm.stateChanSetupErr != nil {
+		return fsm.stateChanSetupErr
+	}
+
+	_, err := fsm.broadcastManager.GetStateChan(
+		ctx,
+		broadcast.WithCustomChannel(c),
+		broadcast.WithTimeout(fsm.broadcastTimeout),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register channel: %w", err)
+	}
+
+	c <- fsm.GetState()
 
 	return nil
 }

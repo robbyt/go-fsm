@@ -19,6 +19,7 @@ package fsm
 import (
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // Option is a functional option for configuring a Machine during construction.
@@ -51,6 +52,28 @@ func WithLogHandler(handler slog.Handler) Option {
 			return fmt.Errorf("log handler cannot be nil")
 		}
 		m.logger = slog.New(handler)
+		return nil
+	}
+}
+
+// WithBroadcastTimeout sets the default timeout for broadcast delivery when using GetStateChan.
+// The timeout controls how long broadcasts will wait when sending to subscriber channels:
+//   - timeout = 0: best-effort delivery (non-blocking, drops message if channel is full)
+//   - timeout > 0: blocks up to the specified duration, then drops the message
+//   - timeout < 0: guaranteed delivery (blocks indefinitely until message is delivered)
+//
+// Default: 100ms (timeout-based delivery)
+//
+// Example:
+//
+//	machine, err := fsm.New(
+//	    "initial",
+//	    transitions.Typical,
+//	    fsm.WithBroadcastTimeout(500*time.Millisecond),
+//	)
+func WithBroadcastTimeout(timeout time.Duration) Option {
+	return func(m *Machine) error {
+		m.broadcastTimeout = timeout
 		return nil
 	}
 }
