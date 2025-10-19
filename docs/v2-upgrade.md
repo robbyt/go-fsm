@@ -8,12 +8,12 @@ This document provides a migration prompt for Large Language Models to help migr
 |---------|--------|--------|
 | **Package** | `github.com/robbyt/go-fsm` | `github.com/robbyt/go-fsm/v2` |
 | **Constructor** | `fsm.New(handler, initialState, transitions)` | `fsm.New(initialState, transitions, opts...)` |
-| **Logger Setup** | Required as first parameter | Optional via `fsm.WithLogHandler(handler)` |
+| **Logger Setup** | Required as first parameter to `New` constructor | Optional via `fsm.WithLogHandler(handler)` |
 | **State Constants** | `fsm.StatusNew`, `fsm.StatusBooting`, etc. | `transitions.StatusNew`, `transitions.StatusBooting`, etc. |
-| **Transitions Type** | `map[string][]string` (also `fsm.TypicalTransitions`) | `*transitions.Config` (use `transitions.Typical`) |
-| **State Broadcasting** | `stateChan := machine.GetStateChan(ctx)` | `err := machine.GetStateChan(ctx, chan)` with `hooks.Registry` |
+| **Transitions Type** | `map[string][]string` (also `fsm.TypicalTransitions`) | `*transitions.Config` (use `transitions.Typical` for common transitions) |
+| **State Broadcasting** | `stateChan := machine.GetStateChan(ctx)` | `err := machine.GetStateChan(ctx, chan)` with a user-created channel |
 | **Broadcast Timeout** | `fsm.WithSyncTimeout(duration)` | `fsm.WithBroadcastTimeout(duration)` option |
-| **Hooks/Callbacks** | Built into machine | Separate `hooks.Registry` with pre/post hooks |
+| **Hooks/Callbacks** | Not supported | New `hooks.Registry` with pre/post hooks |
 
 ## What's New in v2
 
