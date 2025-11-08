@@ -60,10 +60,15 @@ func run(ctx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machi
 	}
 
 	go func() {
-		for state := range stateChan {
-			// Writing to output writer; errors are acceptable in this demo
-			//nolint:errcheck
-			fmt.Fprintf(output, "State: %s\n", state)
+		for {
+			select {
+			case state := <-stateChan:
+				// Writing to output writer; errors are acceptable in this demo
+				//nolint:errcheck
+				fmt.Fprintf(output, "State: %s\n", state)
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
