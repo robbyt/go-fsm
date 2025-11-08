@@ -28,7 +28,6 @@ import (
 
 	"github.com/robbyt/go-fsm/v2"
 	"github.com/robbyt/go-fsm/v2/hooks"
-	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
@@ -53,32 +52,21 @@ func run(ctx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machi
 		return nil, fmt.Errorf("failed to create FSM: %w", err)
 	}
 
-	// Create standalone broadcast manager, and register the hook with the callback registry
-	broadcastManager := broadcast.NewManager(logger.Handler())
-	err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-		Name:   "broadcast",
-		From:   []string{"*"},
-		To:     []string{"*"},
-		Action: broadcastManager.BroadcastHook,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to register broadcast hook: %w", err)
-	}
-
-	// create a channel to receive the state change broadcasts, using WithTimeout(-1) to block indefinitely
-	stateChan, err := broadcastManager.GetStateChan(ctx, broadcast.WithTimeout(-1))
+	// Create a channel to receive state change broadcasts
+	stateChan := make(chan string, 10)
+	err = machine.GetStateChan(ctx, stateChan)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get state channel: %w", err)
 	}
 
-	// Send the initial state to subscribers
-	broadcastManager.Broadcast(machine.GetState())
-
 	go func() {
-		for state := range stateChan {
-			// Writing to output writer; errors are acceptable in this demo
-			//nolint:errcheck
-			fmt.Fprintf(output, "State: %s\n", state)
+		for {
+			select {
+			case state := <-stateChan:
+				fmt.Fprintf(output, "State: %s\n", state) //nolint:errcheck
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
