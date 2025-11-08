@@ -409,9 +409,9 @@ machine, _ := fsm.New(
 ```
 
 Timeout values:
-- `0` (default: 100ms): best-effort delivery (non-blocking)
-- `> 0`: blocks up to duration, then drops message
-- `< 0`: guaranteed delivery (blocks indefinitely)
+- `0` or unspecified: uses default of 100ms (best-effort delivery, non-blocking)
+- `> 0`: blocks up to specified duration, then drops message if channel is full
+- `< 0`: guaranteed delivery (blocks indefinitely until message is delivered)
 
 #### Advanced: Custom Broadcast Manager
 
