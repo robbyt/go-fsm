@@ -215,7 +215,7 @@ err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
 	From: []string{"*"},
 	To:   []string{"*"},
 	Action: func(ctx context.Context, from, to string) {
-		metrics.RecordTransition(from, to)
+		logger.Info("transition recorded", "from", from, "to", to)
 	},
 })
 if err != nil {
@@ -319,7 +319,7 @@ err = registry.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
 	From: []string{"*"},
 	To:   []string{"*"},
 	Action: func(ctx context.Context, from, to string) {
-		metrics.RecordTransition(from, to)
+		logger.Info("transition recorded", "from", from, "to", to)
 	},
 })
 ```
