@@ -25,6 +25,18 @@ go get github.com/robbyt/go-fsm/v2
 
 This example creates an FSM and transitions through states:
 
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> new
+    new --> booting
+    booting --> running
+    running --> stopped
+    running --> error
+    stopped --> new
+    error --> [*]
+```
+
 ```go
 package main
 
@@ -76,6 +88,19 @@ func main() {
 
 ### Defining Custom States and Transitions
 
+This example demonstrates a machine with online/offline states that can transition to an error state:
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> online
+    online --> offline
+    online --> error
+    offline --> online
+    offline --> error
+    error --> [*]
+```
+
 ```go
 // Simple machine definition with an inline map
 machine, err := fsm.NewSimple("online", map[string][]string{
@@ -102,7 +127,29 @@ machine, err := fsm.New("online", customTransitions)
 
 ### Creating an FSM using the "Typical" Transition Set
 
-The `transitions` package provides predefined transition sets. This example uses the `Typical` configuration.
+The `transitions` package provides predefined transition sets. This example uses the `Typical` configuration, which represents an application lifecycle:
+
+```mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> New
+    New --> Booting
+    Booting --> Running
+    Running --> Reloading
+    Reloading --> Running
+    Running --> Stopping
+    Stopping --> Stopped
+    Stopped --> New
+
+    New --> Error
+    Booting --> Error
+    Running --> Error
+    Reloading --> Error
+    Stopping --> Error
+    Stopped --> Error
+    Error --> Stopping
+    Error --> Stopped
+```
 
 ```go
 import (
