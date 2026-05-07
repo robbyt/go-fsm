@@ -52,10 +52,12 @@ func New(config map[string][]string) (*Config, error) {
 }
 
 // MustNew creates a new Transitions instance and panics if there's an error.
+// The panic value is the wrapped error from New, preserving the underlying
+// error chain so callers using recover can inspect it with errors.Is/As.
 func MustNew(config map[string][]string) *Config {
 	t, err := New(config)
 	if err != nil {
-		panic(fmt.Sprintf("failed to create transitions: %v", err))
+		panic(fmt.Errorf("failed to create transitions: %w", err))
 	}
 	return t
 }
