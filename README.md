@@ -456,9 +456,12 @@ machine, _ := fsm.New(
 ```
 
 Timeout values:
-- `0` or unspecified: uses default of 100ms (best-effort delivery, non-blocking)
-- `> 0`: blocks up to specified duration, then drops message if channel is full
-- `< 0`: guaranteed delivery (blocks indefinitely until message is delivered)
+- unspecified: defaults to 100ms timeout-mode (blocks up to 100ms per send, then drops)
+- `0`: best-effort delivery (non-blocking; drops immediately if the channel is full)
+- `> 0`: blocks up to the specified duration, then drops the message if the channel is full
+- `< 0`: guaranteed delivery (blocks indefinitely until the message is delivered)
+
+> **Note:** broadcasts run inside the post-transition hook chain while the FSM is locked. A slow subscriber stalls every transition for up to the configured timeout, and `< 0` (guaranteed delivery) can stall it indefinitely. Prefer `0` or a finite timeout in production unless you control the consumer.
 
 #### Advanced: Custom Broadcast Manager
 
