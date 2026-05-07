@@ -245,6 +245,18 @@ func TestMustNew(t *testing.T) {
 			})
 		})
 	})
+
+	t.Run("panic preserves wrapped error chain", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			require.NotNil(t, r)
+			err, ok := r.(error)
+			require.True(t, ok, "panic value must be an error, got %T", r)
+			assert.ErrorIs(t, err, ErrEmptyConfig)
+		}()
+
+		MustNew(map[string][]string{})
+	})
 }
 
 func TestIsTransitionAllowed(t *testing.T) {
