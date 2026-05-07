@@ -113,7 +113,9 @@ func (t *Config) GetAllStates() []string {
 	return states
 }
 
-// AsMap returns a copy of the configuration map.
+// AsMap returns a deep copy of the configuration map.
+// Both the outer map and the inner target slices are cloned, so callers may
+// freely mutate the result without affecting this Config.
 func (t *Config) AsMap() map[string][]string {
 	result := maps.Clone(t.config)
 	for from, tos := range result {
