@@ -456,7 +456,7 @@ machine, _ := fsm.New(
 ```
 
 Timeout values:
-- unspecified: defaults to 100ms timeout-mode (blocks up to 100ms per send, then drops)
+- unspecified: defaults to 100ms timeout-mode (blocks up to 100ms per send, then drops the message if the channel is full)
 - `0`: best-effort delivery (non-blocking; drops immediately if the channel is full)
 - `> 0`: blocks up to the specified duration, then drops the message if the channel is full
 - `< 0`: guaranteed delivery (blocks indefinitely until the message is delivered)
