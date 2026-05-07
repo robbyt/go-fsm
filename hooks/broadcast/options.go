@@ -28,14 +28,19 @@ type Config struct {
 	timeout         time.Duration
 }
 
-// WithBufferSize creates a channel with the specified buffer size.
+// WithBufferSize creates a new internal channel with the specified buffer size.
 // A negative size is treated as 0 (unbuffered) to avoid a panic in make.
+// If a previous option set an external channel via WithCustomChannel, this
+// option overrides it: the channel will be owned by the manager and closed
+// when the context is cancelled.
 func WithBufferSize(size int) Option {
+	bufSize := size
+	if bufSize < 0 {
+		bufSize = 0
+	}
 	return func(config *Config) {
-		if size < 0 {
-			size = 0
-		}
-		config.channel = make(chan string, size)
+		config.channel = make(chan string, bufSize)
+		config.externalChannel = false
 	}
 }
 
