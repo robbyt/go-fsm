@@ -48,6 +48,14 @@ import (
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
+// transitionDB is the contract a transition table must satisfy.
+//
+// Implementations MUST be safe for concurrent reads from multiple goroutines.
+// The Machine does not guard transitionDB calls with its mutex
+// (GetAllStates, HasState, IsTransitionAllowed all run lock-free), so any
+// locking or copying needed for read safety is the implementation's
+// responsibility. The bundled transitions.Config satisfies this contract:
+// its index is built once at construction and never mutated.
 type transitionDB interface {
 	HasState(state string) bool
 	GetAllStates() []string
