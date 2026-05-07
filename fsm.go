@@ -144,8 +144,14 @@ func NewSimple(
 }
 
 // GetState returns the current state of the finite state machine.
+//
+// Safety: state is only ever written by setState/Store with a string value,
+// so the assertion below cannot fail in practice. Use the comma-ok form
+// anyway so a future regression that stores a non-string (or queries before
+// the initial Store) returns "" instead of panicking.
 func (fsm *Machine) GetState() string {
-	return fsm.state.Load().(string)
+	v, _ := fsm.state.Load().(string)
+	return v
 }
 
 // GetAllStates returns all allowed states that have been added to this FSM.
