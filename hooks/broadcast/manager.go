@@ -124,7 +124,10 @@ func (m *Manager) Broadcast(state string) {
 			case ch <- state:
 				logger.Debug("State delivered to best-effort subscriber")
 			default:
-				logger.Debug("Best-effort subscriber channel full; state delivery skipped",
+				// Promote to Warn for parity with the timeout-mode drop log
+				// below, since silently lost state updates often indicate a
+				// slow consumer that needs investigation.
+				logger.Warn("Best-effort subscriber channel full; state delivery skipped",
 					"channel_capacity", cap(ch), "channel_length", len(ch))
 			}
 		}
