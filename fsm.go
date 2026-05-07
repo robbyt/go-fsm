@@ -149,9 +149,11 @@ func (fsm *Machine) GetState() string {
 }
 
 // GetAllStates returns all allowed states that have been added to this FSM.
+//
+// The transition table is set at construction and not mutated, so this method
+// does not take the FSM mutex. Callers passing a custom transitionDB
+// implementation must ensure their type is safe for concurrent reads.
 func (fsm *Machine) GetAllStates() []string {
-	fsm.mutex.RLock()
-	defer fsm.mutex.RUnlock()
 	return fsm.transitions.GetAllStates()
 }
 
