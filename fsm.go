@@ -145,10 +145,13 @@ func NewSimple(
 
 // GetState returns the current state of the finite state machine.
 //
-// Safety: state is only ever written by setState/Store with a string value,
-// so the assertion below cannot fail in practice. Use the comma-ok form
-// anyway so a future regression that stores a non-string (or queries before
-// the initial Store) returns "" instead of panicking.
+// Safety: setState only stores strings, and atomic.Value would already
+// panic at Store-time on a type mismatch, so the assertion below cannot
+// fail in practice. The comma-ok form is used to defend against the only
+// remaining edge case — a Load on a Machine constructed without going
+// through New (zero-value, no initial Store), which returns nil from
+// Load and would otherwise panic on the assertion. In that case the
+// caller observes "" rather than a runtime panic.
 func (fsm *Machine) GetState() string {
 	v, _ := fsm.state.Load().(string)
 	return v
