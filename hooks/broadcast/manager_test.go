@@ -98,6 +98,18 @@ func TestGetStateChan_WithBufferSize(t *testing.T) {
 	assert.Equal(t, 5, cap(ch))
 }
 
+func TestGetStateChan_WithBufferSize_Negative(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+
+	// Negative sizes must not panic; they are clamped to 0 (unbuffered).
+	ch, err := manager.GetStateChan(t.Context(), broadcast.WithBufferSize(-1))
+	require.NoError(t, err)
+	assert.NotNil(t, ch)
+	assert.Equal(t, 0, cap(ch))
+}
+
 func TestGetStateChan_WithCustomChannel(t *testing.T) {
 	t.Parallel()
 

@@ -29,8 +29,12 @@ type Config struct {
 }
 
 // WithBufferSize creates a channel with the specified buffer size.
+// A negative size is treated as 0 (unbuffered) to avoid a panic in make.
 func WithBufferSize(size int) Option {
 	return func(config *Config) {
+		if size < 0 {
+			size = 0
+		}
 		config.channel = make(chan string, size)
 	}
 }
