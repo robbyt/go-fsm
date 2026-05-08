@@ -483,6 +483,44 @@ func TestFSM_Concurrency(t *testing.T) {
 		finalState := fsm.GetState()
 		assert.Contains(t, []string{"state1", "state2"}, finalState)
 	})
+
+	t.Run("GetAllStates races with Transition", func(t *testing.T) {
+		// Regression: GetAllStates used to take the FSM's RLock. The lock was
+		// removed because the bundled transitions.Config is immutable after
+		// construction. This test asserts that running GetAllStates
+		// concurrently with Transition is race-detector clean and never
+		// returns a malformed slice.
+		fsm, err := NewSimple("state1", map[string][]string{
+			"state1": {"state2"},
+			"state2": {"state1"},
+		})
+		require.NoError(t, err)
+
+		expected := []string{"state1", "state2"}
+
+		var wg sync.WaitGroup
+		for range 50 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 20 {
+					states := fsm.GetAllStates()
+					assert.ElementsMatch(t, expected, states)
+				}
+			}()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 20 {
+					//nolint:errcheck // racing for safety, not correctness
+					_ = fsm.Transition("state2")
+					//nolint:errcheck
+					_ = fsm.Transition("state1")
+				}
+			}()
+		}
+		wg.Wait()
+	})
 }
 
 func TestFSM_Options(t *testing.T) {
