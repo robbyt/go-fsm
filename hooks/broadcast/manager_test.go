@@ -98,6 +98,44 @@ func TestGetStateChan_WithBufferSize(t *testing.T) {
 	assert.Equal(t, 5, cap(ch))
 }
 
+func TestGetStateChan_WithBufferSize_Negative(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+
+	// Negative sizes must not panic; they are clamped to 0 (unbuffered).
+	ch, err := manager.GetStateChan(t.Context(), broadcast.WithBufferSize(-1))
+	require.NoError(t, err)
+	assert.NotNil(t, ch)
+	assert.Equal(t, 0, cap(ch))
+}
+
+func TestGetStateChan_WithBufferSize_OverridesCustomChannel(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+
+	// When both options are passed, WithBufferSize wins and clears the
+	// externalChannel flag. Otherwise the manager-allocated channel would
+	// be treated as external and never closed on context cancel.
+	ctx, cancel := context.WithCancel(t.Context())
+	external := make(chan string, 1)
+	ch, err := manager.GetStateChan(ctx,
+		broadcast.WithCustomChannel(external),
+		broadcast.WithBufferSize(2),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, ch)
+	assert.Equal(t, 2, cap(ch))
+
+	cancel()
+	assert.Eventually(t, func() bool {
+		_, ok := <-ch
+		return !ok
+	}, 200*time.Millisecond, 10*time.Millisecond,
+		"manager-owned channel should be closed on context cancel")
+}
+
 func TestGetStateChan_WithCustomChannel(t *testing.T) {
 	t.Parallel()
 
