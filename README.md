@@ -405,7 +405,7 @@ func main() {
 
 	// 1. Create hooks registry with transitions (required for broadcast support)
 	registry, _ := hooks.NewRegistry(
-		hooks.WithLogHandler(logger.Handler()),
+		hooks.WithLogger(logger),
 		hooks.WithTransitions(transitions.Typical),
 	)
 
@@ -413,7 +413,7 @@ func main() {
 	machine, _ := fsm.New(
 		transitions.StatusNew,
 		transitions.Typical,
-		fsm.WithLogHandler(logger.Handler()),
+		fsm.WithLogger(logger),
 		fsm.WithCallbackRegistry(registry),
 	)
 
