@@ -165,6 +165,19 @@ func TestFSM_GetState(t *testing.T) {
 	assert.Equal(t, "initial", fsm.GetState())
 }
 
+// TestFSM_GetState_ZeroValue verifies the comma-ok type assertion in
+// GetState handles a zero-value Machine (atomic.Value.Load returns nil)
+// without panicking. Constructing a Machine outside New() is not part of
+// the public API, but this defends against accidental misuse.
+func TestFSM_GetState_ZeroValue(t *testing.T) {
+	t.Parallel()
+
+	var fsm Machine
+	assert.NotPanics(t, func() {
+		assert.Equal(t, "", fsm.GetState())
+	})
+}
+
 func TestFSM_SetState(t *testing.T) {
 	t.Parallel()
 
