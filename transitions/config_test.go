@@ -307,6 +307,19 @@ func TestGetAllowedTransitions(t *testing.T) {
 		assert.False(t, ok)
 		assert.Nil(t, targets)
 	})
+
+	t.Run("returns targets in sorted order", func(t *testing.T) {
+		trans := MustNew(map[string][]string{
+			"src": {"zulu", "alpha", "mike", "bravo"},
+			"alpha": {},
+			"bravo": {},
+			"mike":  {},
+			"zulu":  {},
+		})
+		targets, ok := trans.GetAllowedTransitions("src")
+		require.True(t, ok)
+		assert.Equal(t, []string{"alpha", "bravo", "mike", "zulu"}, targets)
+	})
 }
 
 func TestHasState(t *testing.T) {

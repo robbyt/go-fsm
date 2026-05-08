@@ -73,8 +73,9 @@ func (t *Config) IsTransitionAllowed(from, to string) bool {
 	return exists
 }
 
-// GetAllowedTransitions returns all allowed target states from a given source state.
-// Returns the slice of target states and a boolean indicating if the source state exists.
+// GetAllowedTransitions returns all allowed target states from a given source
+// state, sorted alphabetically. Returns the slice of target states and a
+// boolean indicating if the source state exists.
 func (t *Config) GetAllowedTransitions(from string) ([]string, bool) {
 	targetsMap, ok := t.index[from]
 	if !ok {
@@ -85,6 +86,7 @@ func (t *Config) GetAllowedTransitions(from string) ([]string, bool) {
 	for target := range targetsMap {
 		targets = append(targets, target)
 	}
+	slices.Sort(targets)
 	return targets, true
 }
 
