@@ -96,6 +96,17 @@ func (t *Config) HasState(state string) bool {
 	return ok
 }
 
+// IsTerminal reports whether the given state has no outgoing transitions.
+// Returns true only if the state is defined and its allowed-targets set is
+// empty. Unknown states return false.
+func (t *Config) IsTerminal(state string) bool {
+	targets, ok := t.index[state]
+	if !ok {
+		return false
+	}
+	return len(targets) == 0
+}
+
 // GetAllStates returns all source/target states defined in the transitions configuration, and
 // returns an alphabetically sorted slice.
 func (t *Config) GetAllStates() []string {

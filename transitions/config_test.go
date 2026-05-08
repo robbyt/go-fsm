@@ -322,6 +322,29 @@ func TestGetAllowedTransitions(t *testing.T) {
 	})
 }
 
+func TestIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	trans := MustNew(map[string][]string{
+		"running":  {"stopped", "error"},
+		"stopped":  {},
+		"error":    {},
+	})
+
+	t.Run("returns true for terminal state", func(t *testing.T) {
+		assert.True(t, trans.IsTerminal("stopped"))
+		assert.True(t, trans.IsTerminal("error"))
+	})
+
+	t.Run("returns false for non-terminal state", func(t *testing.T) {
+		assert.False(t, trans.IsTerminal("running"))
+	})
+
+	t.Run("returns false for unknown state", func(t *testing.T) {
+		assert.False(t, trans.IsTerminal("nope"))
+	})
+}
+
 func TestHasState(t *testing.T) {
 	t.Parallel()
 
