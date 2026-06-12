@@ -747,3 +747,36 @@ func TestJSONRoundTrip(t *testing.T) {
 		assert.ElementsMatch(t, Typical.GetAllStates(), restored.GetAllStates())
 	})
 }
+
+// TestNew_DeepCopiesInput verifies that New snapshots the caller's map so that
+// later mutations to it cannot desynchronize the stored config from the
+// validated index. Before New deep-copied its input, adding/removing entries
+// in the caller's map after construction leaked into GetAllStates/AsMap (which
+// read the stored config) while HasState/IsTransitionAllowed (which read the
+// index) disagreed.
+func TestNew_DeepCopiesInput(t *testing.T) {
+	t.Parallel()
+
+	input := map[string][]string{
+		"online":  {"offline"},
+		"offline": {"online"},
+	}
+	cfg, err := New(input)
+	require.NoError(t, err)
+
+	// Mutate the caller's map (and an inner slice) after construction.
+	input["evil"] = []string{"online"}
+	input["online"] = append(input["online"], "evil")
+	delete(input, "offline")
+
+	// The Config must reflect the original snapshot, not the mutations.
+	assert.False(t, cfg.HasState("evil"), "injected state must not appear")
+	assert.NotContains(t, cfg.GetAllStates(), "evil", "GetAllStates must not see post-construction mutations")
+	assert.True(t, cfg.HasState("offline"), "deleted state must still be present")
+	assert.False(t, cfg.IsTransitionAllowed("online", "evil"), "injected transition must not be allowed")
+
+	// AsMap must also be free of the injected entries.
+	m := cfg.AsMap()
+	assert.NotContains(t, m, "evil")
+	assert.NotContains(t, m["online"], "evil")
+}
