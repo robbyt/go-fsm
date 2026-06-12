@@ -17,4 +17,9 @@ var (
 
 	// ErrHookNotFound is returned when attempting to remove a hook that doesn't exist
 	ErrHookNotFound = errors.New("hook not found")
+
+	// ErrHookFuncNil is returned when registering a hook without its callback
+	// function (a nil Guard for a pre-transition hook or a nil Action for a
+	// post-transition hook).
+	ErrHookFuncNil = errors.New("hook function cannot be nil")
 )

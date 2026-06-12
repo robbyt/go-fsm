@@ -1168,3 +1168,50 @@ func TestRemoveHookConcurrentExecuteNoRace(t *testing.T) {
 		require.NoError(t, reg.RemoveHook(name))
 	}
 }
+
+// TestRegisterHook_NilFuncRejected verifies that registering a hook without its
+// callback fails fast at registration with ErrHookFuncNil, instead of being
+// accepted and later surfacing as a recovered nil-pointer panic
+// (ErrCallbackPanic) on the first matching transition.
+func TestRegisterHook_NilFuncRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil guard rejected", func(t *testing.T) {
+		reg, err := NewRegistry()
+		require.NoError(t, err)
+		err = reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name:  "nil-guard",
+			From:  []string{"a"},
+			To:    []string{"b"},
+			Guard: nil,
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrHookFuncNil)
+	})
+
+	t.Run("nil action rejected", func(t *testing.T) {
+		reg, err := NewRegistry()
+		require.NoError(t, err)
+		err = reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name:   "nil-action",
+			From:   []string{"a"},
+			To:     []string{"b"},
+			Action: nil,
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrHookFuncNil)
+	})
+
+	t.Run("valid hooks still register", func(t *testing.T) {
+		reg, err := NewRegistry()
+		require.NoError(t, err)
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "ok-guard", From: []string{"a"}, To: []string{"b"},
+			Guard: func(ctx context.Context, from, to string) error { return nil },
+		}))
+		require.NoError(t, reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name: "ok-action", From: []string{"a"}, To: []string{"b"},
+			Action: func(ctx context.Context, from, to string) {},
+		}))
+	})
+}
