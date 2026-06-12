@@ -57,6 +57,10 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 		opt(config)
 	}
 
+	// Record the subscriber's cancellation signal so Broadcast can abandon a
+	// blocking send once this subscriber's context is cancelled.
+	config.done = ctx.Done()
+
 	var ch chan string
 	if config.channel != nil {
 		ch = config.channel
@@ -99,11 +103,22 @@ func (m *Manager) Broadcast(state string) {
 	var wg sync.WaitGroup
 
 	for ch, config := range m.iterSubscribers() {
+		// done is the subscriber's context cancellation signal. Selecting on it
+		// in the blocking branches ensures a subscriber that has gone away (its
+		// context was cancelled) cannot block the broadcast indefinitely while
+		// the manager mutex is held, which would otherwise deadlock unsubscribe
+		// and every future Broadcast.
+		done := config.done
 		if config.timeout < 0 {
-			// Negative timeout: block indefinitely (guaranteed delivery)
+			// Negative timeout: block until delivered or the subscriber departs
+			// (guaranteed delivery for live subscribers).
 			wg.Go(func() {
-				ch <- state
-				logger.Debug("State delivered to guaranteed delivery subscriber")
+				select {
+				case ch <- state:
+					logger.Debug("State delivered to guaranteed delivery subscriber")
+				case <-done:
+					logger.Debug("Guaranteed-delivery subscriber departed before delivery; aborting send")
+				}
 			})
 		} else if config.timeout > 0 {
 			// Positive timeout: block up to timeout duration
@@ -112,6 +127,8 @@ func (m *Manager) Broadcast(state string) {
 				select {
 				case ch <- state:
 					logger.Debug("State delivered to timeout subscriber")
+				case <-done:
+					logger.Debug("Timeout subscriber departed before delivery; aborting send")
 				case <-time.After(timeout):
 					logger.Warn("Timeout subscriber blocked; state delivery timed out",
 						"timeout", timeout,
