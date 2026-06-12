@@ -319,6 +319,20 @@ func (r *Registry) registerHookEntry(name string, entry *hookEntry) error {
 		return fmt.Errorf("from and to state lists cannot be empty")
 	}
 
+	// Reject a missing callback at registration time rather than letting it
+	// surface later as a recovered nil-pointer panic on the first matching
+	// transition.
+	switch entry.hookType {
+	case HookTypePre:
+		if entry.guard == nil {
+			return fmt.Errorf("%w: pre-transition hook %q requires a guard", ErrHookFuncNil, name)
+		}
+	case HookTypePost:
+		if entry.action == nil {
+			return fmt.Errorf("%w: post-transition hook %q requires an action", ErrHookFuncNil, name)
+		}
+	}
+
 	if _, exists := r.hooks[name]; exists {
 		return fmt.Errorf("%w: %s", ErrHookNameAlreadyExists, name)
 	}
