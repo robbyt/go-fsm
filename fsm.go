@@ -326,6 +326,11 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 // GetStateChan can be called multiple times with different channels and contexts. All channels
 // share the same broadcast manager, which is lazily initialized only once upon the first call.
 //
+// Each Machine registers its broadcast hook under a name unique to that Machine, so a single
+// hooks.Registry may be shared across Machines without GetStateChan failing. Note, however, that
+// hooks registered on a shared registry fire for every Machine's transitions; prefer one registry
+// per Machine unless that shared behavior is intended.
+//
 // Broadcast delivery behavior is controlled by the timeout configured via WithBroadcastTimeout:
 //   - timeout = 0: best-effort delivery (non-blocking, drops if channel is full)
 //   - timeout > 0: blocks up to the timeout duration, then drops the message
@@ -385,8 +390,12 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 	fsm.stateChanSetup.Do(func() {
 		fsm.broadcastManager = broadcast.NewManager(fsm.logger.Handler())
 
+		// Use a per-machine hook name so multiple machines can share one
+		// registry. A constant name would collide on the second machine
+		// (ErrHookNameAlreadyExists), and because the error is cached in the
+		// sync.Once that machine's GetStateChan would then fail permanently.
 		fsm.stateChanSetupErr = registrar.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-			Name:   "fsm.GetStateChan",
+			Name:   fmt.Sprintf("fsm.GetStateChan.%p", fsm),
 			From:   []string{"*"},
 			To:     []string{"*"},
 			Action: fsm.broadcastManager.BroadcastHook,
