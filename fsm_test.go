@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -970,6 +971,9 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 			default:
 				machine.TransitionBool(transitions.StatusReloading)
 				machine.TransitionBool(transitions.StatusRunning)
+				// Yield rather than spin flat-out; keeps transitions frequent
+				// enough to exercise the race without pegging a CPU under -race.
+				runtime.Gosched()
 			}
 		}
 	}()
