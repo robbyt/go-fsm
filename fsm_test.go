@@ -1005,3 +1005,24 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 			i, got[0], got)
 	}
 }
+
+// TestGetStateChan_InitialSendRespectsContext verifies that the initial-state
+// send honors the context: with an unbuffered channel and no reader the send
+// blocks, and a cancelled context makes GetStateChan return the context error
+// instead of hanging while holding the FSM read lock.
+func TestGetStateChan_InitialSendRespectsContext(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel up front so the blocked initial send aborts
+
+	ch := make(chan string) // unbuffered, no reader: the initial send blocks
+	err = machine.GetStateChan(ctx, ch)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
