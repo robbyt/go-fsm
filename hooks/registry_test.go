@@ -1147,6 +1147,13 @@ func TestRemoveHookConcurrentExecuteNoRace(t *testing.T) {
 			}
 		}
 	}()
+	// Always stop and join the executor goroutine, even if a require below
+	// fails early via FailNow, so it can't outlive the test and log after
+	// completion or interfere with later tests.
+	t.Cleanup(func() {
+		close(stop)
+		wg.Wait()
+	})
 
 	for i := 0; i < 2000; i++ {
 		name := fmt.Sprintf("churn-%d", i)
@@ -1160,6 +1167,4 @@ func TestRemoveHookConcurrentExecuteNoRace(t *testing.T) {
 		}))
 		require.NoError(t, reg.RemoveHook(name))
 	}
-	close(stop)
-	wg.Wait()
 }
