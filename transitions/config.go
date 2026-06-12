@@ -40,13 +40,23 @@ func New(config map[string][]string) (*Config, error) {
 		return nil, ErrEmptyConfig
 	}
 
-	index, err := buildIndex(config)
+	// Deep-copy the caller's map before storing it. Without this, later
+	// mutations to the passed-in map would desynchronize the stored config
+	// (read by GetAllStates/AsMap/MarshalJSON) from the validated index (read
+	// by HasState/IsTransitionAllowed), and concurrent mutation by the caller
+	// would race with reads.
+	stored := maps.Clone(config)
+	for from, tos := range stored {
+		stored[from] = slices.Clone(tos)
+	}
+
+	index, err := buildIndex(stored)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 
 	return &Config{
-		config: config,
+		config: stored,
 		index:  index,
 	}, nil
 }
