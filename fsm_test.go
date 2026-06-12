@@ -961,9 +961,7 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -976,7 +974,7 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 				runtime.Gosched()
 			}
 		}
-	}()
+	})
 	t.Cleanup(func() {
 		close(stop)
 		wg.Wait()
@@ -989,15 +987,15 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 
 		// Collect the initial value plus the first broadcast.
 		var got []string
-		for len(got) < 2 {
+		require.Eventuallyf(t, func() bool {
 			select {
 			case s := <-ch:
 				got = append(got, s)
-			case <-time.After(2 * time.Second):
-				cancel()
-				t.Fatalf("iteration %d: timed out collecting states, got %v", i, got)
+			default:
 			}
-		}
+			return len(got) >= 2
+		}, 2*time.Second, time.Millisecond,
+			"iteration %d: timed out collecting states, got %v", i, got)
 		cancel()
 
 		require.NotEqualf(t, got[0], got[1],
