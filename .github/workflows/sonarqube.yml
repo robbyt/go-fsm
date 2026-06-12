@@ -1,0 +1,56 @@
+name: SonarQube
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  GOCACHE: "/tmp/go-cache"
+  GOMODCACHE: "/tmp/go-mod-cache"
+
+# Avoid piling up scans on rapid pushes to the same ref.
+concurrency:
+  group: sonarqube-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sonarqube:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Fetch all history for proper SonarQube analysis (blame, new-code detection).
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Generate coverage report
+        run: go test -coverprofile=unit.coverage.out -cover -race ./...
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=robbyt_go-fsm
+            -Dsonar.organization=robbyt
+            -Dsonar.go.coverage.reportPaths=unit.coverage.out
+            -Dsonar.sources=.
+            -Dsonar.coverage.exclusions=examples/**
+            -Dsonar.exclusions=**/*_test.go
+            -Dsonar.tests=.
+            -Dsonar.test.inclusions=**/*_test.go
+            -Dsonar.language=go
+            -Dsonar.sourceEncoding=UTF-8

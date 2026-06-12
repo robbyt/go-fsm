@@ -22,9 +22,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          # Fetch all history for proper SonarQube analysis
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -46,26 +43,9 @@ jobs:
           cache-invalidation-interval: 30
 
       - name: Go test
-        run: go test -coverprofile=unit.coverage.out -cover -race ./...
+        run: go test -race -cover ./...
 
       - name: Build example
         run: |
           cd example
           timeout 1s go run main.go || [ $? -eq 124 ]
-
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v8
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.projectKey=robbyt_go-fsm
-            -Dsonar.organization=robbyt
-            -Dsonar.go.coverage.reportPaths=unit.coverage.out
-            -Dsonar.sources=.
-            -Dsonar.coverage.exclusions=examples/**
-            -Dsonar.exclusions=**/*_test.go
-            -Dsonar.tests=.
-            -Dsonar.test.inclusions=**/*_test.go
-            -Dsonar.language=go
-            -Dsonar.sourceEncoding=UTF-8
