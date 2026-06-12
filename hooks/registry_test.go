@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"testing"
 
 	"github.com/robbyt/go-fsm/v2/transitions"
@@ -1107,4 +1108,63 @@ func TestRegisterHookValidation(t *testing.T) {
 		require.ErrorIs(t, err, ErrHookNameAlreadyExists)
 		assert.Contains(t, err.Error(), "test-duplicate-post-name")
 	})
+}
+
+// TestRemoveHookConcurrentExecuteNoRace exercises RemoveHook and
+// RegisterPreTransitionHook churning the same transition's index slice while a
+// separate goroutine executes hooks for that transition. Before removeFrom was
+// changed to clone-before-delete, in-place deletion plus a later append reusing
+// the freed slot raced with (and could nil-deref) the lock-free executor
+// snapshot. Run under -race to detect regressions.
+func TestRemoveHookConcurrentExecuteNoRace(t *testing.T) {
+	reg, err := NewRegistry()
+	require.NoError(t, err)
+
+	// A permanent hook keeps the transition's index slice non-empty at index 0.
+	require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+		Name: "permanent",
+		From: []string{"a"},
+		To:   []string{"b"},
+		Guard: func(ctx context.Context, from, to string) error {
+			return nil
+		},
+	}))
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if err := reg.ExecutePreTransitionHooks(context.Background(), "a", "b"); err != nil {
+					t.Errorf("unexpected hook error: %v", err)
+					return
+				}
+			}
+		}
+	}()
+	// Always stop and join the executor goroutine, even if a require below
+	// fails early via FailNow, so it can't outlive the test and log after
+	// completion or interfere with later tests.
+	t.Cleanup(func() {
+		close(stop)
+		wg.Wait()
+	})
+
+	for i := 0; i < 2000; i++ {
+		name := fmt.Sprintf("churn-%d", i)
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: name,
+			From: []string{"a"},
+			To:   []string{"b"},
+			Guard: func(ctx context.Context, from, to string) error {
+				return nil
+			},
+		}))
+		require.NoError(t, reg.RemoveHook(name))
+	}
 }
