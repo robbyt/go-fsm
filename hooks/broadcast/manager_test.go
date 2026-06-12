@@ -511,3 +511,61 @@ func TestGetStateChan_CustomChannelNotClosedOnContextCancel(t *testing.T) {
 	// Clean up: close the custom channel since we own it
 	close(customCh)
 }
+
+// TestBroadcast_CancelledGuaranteedSubscriberDoesNotDeadlock verifies that a
+// guaranteed-delivery subscriber (timeout < 0) that has stopped reading cannot
+// permanently wedge the manager. Before Broadcast selected on the subscriber's
+// context cancellation, a full, unread guaranteed-delivery channel blocked
+// Broadcast forever while holding the manager mutex, so cancelling the
+// subscriber could never unsubscribe it and every future Broadcast deadlocked.
+func TestBroadcast_CancelledGuaranteedSubscriberDoesNotDeadlock(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Guaranteed delivery, default buffer size 1; nobody ever reads from ch.
+	_, err := manager.GetStateChan(ctx, broadcast.WithTimeout(-1))
+	require.NoError(t, err)
+
+	// Fill the single-slot buffer so the next send has nowhere to go.
+	manager.Broadcast("first")
+
+	// A second broadcast blocks in the guaranteed-delivery send: the channel is
+	// full and unread, so Broadcast holds the manager mutex and does not return.
+	broadcastReturned := make(chan struct{})
+	go func() {
+		manager.Broadcast("second")
+		close(broadcastReturned)
+	}()
+
+	// Confirm it is actually blocked before we cancel.
+	select {
+	case <-broadcastReturned:
+		t.Fatal("Broadcast returned before its send could block; test precondition not met")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Cancelling the subscriber must let the blocked send abort, releasing the
+	// mutex and allowing Broadcast to return.
+	cancel()
+	select {
+	case <-broadcastReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Broadcast deadlocked: a cancelled guaranteed-delivery subscriber blocked it forever")
+	}
+
+	// The manager must remain usable after the dead subscriber is gone.
+	readerCtx, readerCancel := context.WithCancel(context.Background())
+	t.Cleanup(readerCancel)
+	got, err := manager.GetStateChan(readerCtx, broadcast.WithBufferSize(1))
+	require.NoError(t, err)
+	manager.Broadcast("third")
+	select {
+	case state := <-got:
+		assert.Equal(t, "third", state)
+	case <-time.After(time.Second):
+		t.Fatal("manager wedged: a fresh subscriber received no broadcast after the deadlock scenario")
+	}
+}

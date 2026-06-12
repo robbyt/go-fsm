@@ -26,6 +26,11 @@ type Config struct {
 	channel         chan string
 	externalChannel bool
 	timeout         time.Duration
+	// done is the subscriber's context cancellation signal, set by
+	// Manager.GetStateChan. Broadcast selects on it so a blocking send to a
+	// subscriber whose context has been cancelled is abandoned instead of
+	// holding the manager mutex forever.
+	done <-chan struct{}
 }
 
 // WithBufferSize creates a new internal channel with the specified buffer size.
