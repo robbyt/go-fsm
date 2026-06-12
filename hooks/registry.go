@@ -65,8 +65,14 @@ type hookEntry struct {
 }
 
 // removeFrom removes this hookEntry from the given slice and returns the new slice.
+//
+// The slice is cloned before deletion so the original backing array is never
+// mutated in place. Hook executors snapshot the index slices under RLock and
+// then iterate after releasing the lock; deleting in place (and a later append
+// reusing the freed slot) would write to elements those snapshots are still
+// reading, causing a data race and potential nil-entry dereference.
 func (e *hookEntry) removeFrom(slice []*hookEntry) []*hookEntry {
-	return slices.DeleteFunc(slice, func(entry *hookEntry) bool {
+	return slices.DeleteFunc(slices.Clone(slice), func(entry *hookEntry) bool {
 		return entry == e
 	})
 }
