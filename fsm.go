@@ -315,6 +315,13 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 // the current state immediately, blocking on sending the initial state if the channel buffer is full.
 // Use a buffered channel to avoid blocking.
 //
+// Subscriber registration and the initial-state send happen while holding the FSM read lock, so they
+// are atomic with respect to transitions. Two consequences follow: GetStateChan must NOT be called
+// from within a transition hook (the hook already holds the FSM write lock, so this would deadlock),
+// and a full or unbuffered channel blocks transitions until the initial send drains. The initial
+// send honors the provided context — if ctx is cancelled while it is blocked, GetStateChan returns
+// the context's error.
+//
 // This method requires the FSM to be configured with a hooks.Registry (via WithCallbackRegistry).
 // The registry must be created with WithTransitions() to support wildcard pattern matching.
 // Returns an error if the callback executor does not support dynamic hook registration.
@@ -406,6 +413,17 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 		return fsm.stateChanSetupErr
 	}
 
+	// Register the subscriber and send the current state while holding the read
+	// lock. Broadcasts only happen under the write lock (the post-transition
+	// hook runs inside transition()), so the read lock guarantees no transition
+	// can broadcast between registering the channel and sending the initial
+	// state. Without it, a concurrent transition could make the subscriber
+	// observe a duplicated or out-of-order first value. Concurrent GetStateChan
+	// callers still proceed in parallel under the shared read lock. (See the
+	// method doc for the blocking and hook-reentrancy implications.)
+	fsm.mutex.RLock()
+	defer fsm.mutex.RUnlock()
+
 	_, err := fsm.broadcastManager.GetStateChan(
 		ctx,
 		broadcast.WithCustomChannel(c),
@@ -415,7 +433,15 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 		return fmt.Errorf("failed to register channel: %w", err)
 	}
 
-	c <- fsm.GetState()
+	// Honor the context during the initial send so a full/unbuffered channel
+	// cannot block here (and thus block transitions, since we hold the read
+	// lock) past the caller's cancellation. The subscriber is unsubscribed by
+	// the same ctx cancellation via the broadcast manager's cleanup goroutine.
+	select {
+	case c <- fsm.GetState():
+	case <-ctx.Done():
+		return fmt.Errorf("state channel registration canceled: %w", ctx.Err())
+	}
 
 	return nil
 }

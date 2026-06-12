@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -940,4 +941,86 @@ func TestGetStateChan_SharedRegistry(t *testing.T) {
 	// Each subscriber receives its own machine's initial state.
 	assert.Equal(t, transitions.StatusNew, <-ch1)
 	assert.Equal(t, transitions.StatusNew, <-ch2)
+}
+
+// TestGetStateChan_InitialSendIsAtomic verifies that registering a subscriber
+// and sending its initial state happen atomically with respect to transitions.
+// Before GetStateChan held the read lock across registration and the initial
+// send, a concurrent transition could broadcast between the two steps, so the
+// subscriber observed a duplicated or stale first value. With strictly
+// alternating Running<->Reloading transitions, the initial value (current
+// state) and the first broadcast that follows must always differ; an equal
+// pair signals the race.
+func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusRunning, transitions.Typical,
+		WithCallbackRegistry(reg),
+	)
+	require.NoError(t, err)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				machine.TransitionBool(transitions.StatusReloading)
+				machine.TransitionBool(transitions.StatusRunning)
+				// Yield rather than spin flat-out; keeps transitions frequent
+				// enough to exercise the race without pegging a CPU under -race.
+				runtime.Gosched()
+			}
+		}
+	})
+	t.Cleanup(func() {
+		close(stop)
+		wg.Wait()
+	})
+
+	for i := 0; i < 500; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		ch := make(chan string, 256)
+		require.NoError(t, machine.GetStateChan(ctx, ch))
+
+		// Collect the initial value plus the first broadcast.
+		var got []string
+		require.Eventuallyf(t, func() bool {
+			select {
+			case s := <-ch:
+				got = append(got, s)
+			default:
+			}
+			return len(got) >= 2
+		}, 2*time.Second, time.Millisecond,
+			"iteration %d: timed out collecting states, got %v", i, got)
+		cancel()
+
+		require.NotEqualf(t, got[0], got[1],
+			"iteration %d: initial value %q duplicated by the first broadcast %v; subscribe and initial send were not atomic",
+			i, got[0], got)
+	}
+}
+
+// TestGetStateChan_InitialSendRespectsContext verifies that the initial-state
+// send honors the context: with an unbuffered channel and no reader the send
+// blocks, and a cancelled context makes GetStateChan return the context error
+// instead of hanging while holding the FSM read lock.
+func TestGetStateChan_InitialSendRespectsContext(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel up front so the blocked initial send aborts
+
+	ch := make(chan string) // unbuffered, no reader: the initial send blocks
+	err = machine.GetStateChan(ctx, ch)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 }
