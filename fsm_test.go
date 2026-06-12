@@ -174,7 +174,7 @@ func TestFSM_GetState_ZeroValue(t *testing.T) {
 
 	var fsm Machine
 	assert.NotPanics(t, func() {
-		assert.Equal(t, "", fsm.GetState())
+		assert.Empty(t, fsm.GetState())
 	})
 }
 
