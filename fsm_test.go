@@ -911,3 +911,33 @@ func TestFSM_GetStateChan(t *testing.T) {
 		})
 	})
 }
+
+// TestGetStateChan_SharedRegistry verifies that two machines can share a single
+// hooks.Registry. Previously GetStateChan registered its broadcast hook under a
+// constant name, so the second machine's registration failed with
+// ErrHookNameAlreadyExists and, because the error is cached in sync.Once, that
+// machine's GetStateChan failed permanently. With a per-machine hook name both
+// machines can subscribe.
+func TestGetStateChan_SharedRegistry(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+
+	m1, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	m2, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	ch1 := make(chan string, 10)
+	ch2 := make(chan string, 10)
+	require.NoError(t, m1.GetStateChan(ctx, ch1))
+	require.NoError(t, m2.GetStateChan(ctx, ch2)) // previously failed permanently
+
+	// Each subscriber receives its own machine's initial state.
+	assert.Equal(t, transitions.StatusNew, <-ch1)
+	assert.Equal(t, transitions.StatusNew, <-ch2)
+}
