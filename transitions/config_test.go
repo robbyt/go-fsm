@@ -310,7 +310,7 @@ func TestGetAllowedTransitions(t *testing.T) {
 
 	t.Run("returns targets in sorted order", func(t *testing.T) {
 		trans := MustNew(map[string][]string{
-			"src": {"zulu", "alpha", "mike", "bravo"},
+			"src":   {"zulu", "alpha", "mike", "bravo"},
 			"alpha": {},
 			"bravo": {},
 			"mike":  {},
@@ -326,9 +326,9 @@ func TestIsTerminal(t *testing.T) {
 	t.Parallel()
 
 	trans := MustNew(map[string][]string{
-		"running":  {"stopped", "error"},
-		"stopped":  {},
-		"error":    {},
+		"running": {"stopped", "error"},
+		"stopped": {},
+		"error":   {},
 	})
 
 	t.Run("returns true for terminal state", func(t *testing.T) {
