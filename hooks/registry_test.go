@@ -1140,7 +1140,10 @@ func TestRemoveHookConcurrentExecuteNoRace(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				_ = reg.ExecutePreTransitionHooks(context.Background(), "a", "b")
+				if err := reg.ExecutePreTransitionHooks(context.Background(), "a", "b"); err != nil {
+					t.Errorf("unexpected hook error: %v", err)
+					return
+				}
 			}
 		}
 	}()
