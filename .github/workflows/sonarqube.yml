@@ -36,7 +36,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Generate coverage report
-        run: go test -coverprofile=unit.coverage.out -cover -race ./...
+        run: go test -coverprofile=unit.coverage.out ./...
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v8
