@@ -579,7 +579,9 @@ func TestGetStateChan_NilCustomChannelIsManagerOwned(t *testing.T) {
 	t.Parallel()
 
 	manager := broadcast.NewManager(newTestLogger().Handler())
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derive from t.Context() so the subscription is cancelled on test
+	// completion even if an assertion below fails before the explicit cancel().
+	ctx, cancel := context.WithCancel(t.Context())
 
 	ch, err := manager.GetStateChan(ctx, broadcast.WithCustomChannel(nil))
 	require.NoError(t, err)
@@ -591,7 +593,7 @@ func TestGetStateChan_NilCustomChannelIsManagerOwned(t *testing.T) {
 	select {
 	case _, ok := <-ch:
 		assert.False(t, ok, "manager-owned channel should be closed after context cancellation")
-	case <-time.After(2 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("channel was not closed after cancellation; nil custom channel was wrongly treated as external")
 	}
 }
