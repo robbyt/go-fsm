@@ -941,3 +941,63 @@ func TestGetStateChan_SharedRegistry(t *testing.T) {
 	assert.Equal(t, transitions.StatusNew, <-ch1)
 	assert.Equal(t, transitions.StatusNew, <-ch2)
 }
+
+// TestGetStateChan_InitialSendIsAtomic verifies that registering a subscriber
+// and sending its initial state happen atomically with respect to transitions.
+// Before GetStateChan held the read lock across registration and the initial
+// send, a concurrent transition could broadcast between the two steps, so the
+// subscriber observed a duplicated or stale first value. With strictly
+// alternating Running<->Reloading transitions, the initial value (current
+// state) and the first broadcast that follows must always differ; an equal
+// pair signals the race.
+func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusRunning, transitions.Typical,
+		WithCallbackRegistry(reg),
+	)
+	require.NoError(t, err)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				machine.TransitionBool(transitions.StatusReloading)
+				machine.TransitionBool(transitions.StatusRunning)
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		wg.Wait()
+	})
+
+	for i := 0; i < 500; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		ch := make(chan string, 256)
+		require.NoError(t, machine.GetStateChan(ctx, ch))
+
+		// Collect the initial value plus the first broadcast.
+		var got []string
+		for len(got) < 2 {
+			select {
+			case s := <-ch:
+				got = append(got, s)
+			case <-time.After(2 * time.Second):
+				cancel()
+				t.Fatalf("iteration %d: timed out collecting states, got %v", i, got)
+			}
+		}
+		cancel()
+
+		require.NotEqualf(t, got[0], got[1],
+			"iteration %d: initial value %q duplicated by the first broadcast %v; subscribe and initial send were not atomic",
+			i, got[0], got)
+	}
+}

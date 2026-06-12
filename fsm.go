@@ -406,6 +406,21 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 		return fsm.stateChanSetupErr
 	}
 
+	// Register the subscriber and send the current state while holding the read
+	// lock. Broadcasts only happen under the write lock (the post-transition
+	// hook runs inside transition()), so the read lock guarantees no transition
+	// can broadcast between registering the channel and sending the initial
+	// state. Without it, a concurrent transition could make the subscriber
+	// observe a duplicated or out-of-order first value. Concurrent
+	// GetStateChan callers still proceed in parallel under the shared read lock.
+	//
+	// Note: the initial send happens under the read lock, so a full or
+	// unbuffered channel blocks transitions until it drains — use a buffered
+	// channel (see the method doc). For the same reason, GetStateChan must not
+	// be called from within a transition hook, which already holds the write lock.
+	fsm.mutex.RLock()
+	defer fsm.mutex.RUnlock()
+
 	_, err := fsm.broadcastManager.GetStateChan(
 		ctx,
 		broadcast.WithCustomChannel(c),
