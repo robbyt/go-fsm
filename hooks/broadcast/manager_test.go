@@ -569,3 +569,31 @@ func TestBroadcast_CancelledGuaranteedSubscriberDoesNotDeadlock(t *testing.T) {
 		t.Fatal("manager wedged: a fresh subscriber received no broadcast after the deadlock scenario")
 	}
 }
+
+// TestGetStateChan_NilCustomChannelIsManagerOwned verifies that passing
+// WithCustomChannel(nil) yields a manager-owned channel that is closed on
+// context cancellation. Previously externalChannel stayed true for a nil custom
+// channel, so the fallback internal channel was never closed and readers
+// ranging over it blocked forever.
+func TestGetStateChan_NilCustomChannelIsManagerOwned(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+	// Derive from t.Context() so the subscription is cancelled on test
+	// completion even if an assertion below fails before the explicit cancel().
+	ctx, cancel := context.WithCancel(t.Context())
+
+	ch, err := manager.GetStateChan(ctx, broadcast.WithCustomChannel(nil))
+	require.NoError(t, err)
+	require.NotNil(t, ch)
+
+	cancel()
+
+	// The manager owns this channel, so it must be closed after cancellation.
+	select {
+	case _, ok := <-ch:
+		assert.False(t, ok, "manager-owned channel should be closed after context cancellation")
+	case <-time.After(time.Second):
+		t.Fatal("channel was not closed after cancellation; nil custom channel was wrongly treated as external")
+	}
+}

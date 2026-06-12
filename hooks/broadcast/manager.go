@@ -65,7 +65,11 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 	if config.channel != nil {
 		ch = config.channel
 	} else {
+		// Fall back to a manager-owned channel. Reset externalChannel in case a
+		// caller passed WithCustomChannel(nil), which would otherwise leave it
+		// true and prevent the cleanup goroutine from closing this channel.
 		ch = make(chan string, 1)
+		config.externalChannel = false
 	}
 
 	// Register subscriber
