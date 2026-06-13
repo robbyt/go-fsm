@@ -1,6 +1,6 @@
-# Upgrading from go-fsm v1 to v2: LLM Migration Guide
+# Upgrading from go-fsm v1 to v2
 
-This document provides a migration prompt for Large Language Models to help migrate Go codebases from `github.com/robbyt/go-fsm` v1 to v2.
+This guide walks through migrating a Go codebase from `github.com/robbyt/go-fsm` v1 to v2.
 
 ## Quick Reference: Major API Changes
 
@@ -29,7 +29,7 @@ This document provides a migration prompt for Large Language Models to help migr
 
 **When You Need Advanced Control**: You can use `broadcast.Manager` directly for custom broadcast logic, multiple managers, or fine-grained control over hook execution order.
 
-## Migration Instructions for LLMs
+## Migration Steps
 
 When upgrading a codebase from go-fsm v1 to v2, follow these steps:
 
@@ -580,6 +580,6 @@ Use this checklist to verify your migration:
 
 ---
 
-**Note:** This guide is designed for LLM consumption. When using this guide, an LLM should analyze the specific codebase context and apply these patterns appropriately.
+**Note:** Treat the steps above as a template — apply the patterns to your own codebase's states, transitions, and structure rather than copying them verbatim.
 
 **Architecture Recommendation:** The single abstraction constructor pattern (Step 8) is recommended if your project architecture supports it. Instead of scattering v2 setup code throughout your codebase, encapsulate ALL FSM creation logic in ONE internal constructor function. This centralizes complexity, prevents errors, and makes your codebase more maintainable. Future hook additions or configuration changes only require updating a single function rather than hunting down every FSM instantiation site.
