@@ -1024,3 +1024,70 @@ func TestGetStateChan_InitialSendRespectsContext(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }
+
+func TestFSM_IsTransitionAllowed(t *testing.T) {
+	t.Parallel()
+
+	machine, err := New(transitions.StatusRunning, transitions.Typical)
+	require.NoError(t, err)
+
+	assert.True(t, machine.IsTransitionAllowed(transitions.StatusReloading), "Running->Reloading is allowed")
+	assert.True(t, machine.IsTransitionAllowed(transitions.StatusError), "Running->Error is allowed")
+	assert.False(t, machine.IsTransitionAllowed(transitions.StatusNew), "Running->New is not allowed")
+	assert.False(t, machine.IsTransitionAllowed("nonexistent"), "unknown target is not allowed")
+}
+
+func TestFSM_AvailableTransitions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns sorted allowed targets from current state", func(t *testing.T) {
+		machine, err := New(transitions.StatusRunning, transitions.Typical)
+		require.NoError(t, err)
+
+		assert.Equal(t,
+			[]string{transitions.StatusError, transitions.StatusReloading, transitions.StatusStopping},
+			machine.AvailableTransitions(),
+		)
+	})
+
+	t.Run("includes a self-loop target", func(t *testing.T) {
+		machine, err := New(transitions.StatusUnknown, transitions.Typical)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{transitions.StatusUnknown}, machine.AvailableTransitions())
+	})
+
+	t.Run("returns empty slice for a terminal state", func(t *testing.T) {
+		machine, err := NewSimple("a", map[string][]string{
+			"a": {"b"},
+			"b": {},
+		})
+		require.NoError(t, err)
+		require.NoError(t, machine.Transition("b"))
+
+		assert.Empty(t, machine.AvailableTransitions())
+	})
+}
+
+func TestFSM_IsTerminal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("true when current state has no outgoing transitions", func(t *testing.T) {
+		machine, err := NewSimple("a", map[string][]string{
+			"a": {"b"},
+			"b": {},
+		})
+		require.NoError(t, err)
+
+		assert.False(t, machine.IsTerminal(), "a has an outgoing transition")
+		require.NoError(t, machine.Transition("b"))
+		assert.True(t, machine.IsTerminal(), "b is terminal")
+	})
+
+	t.Run("false for a self-looping state", func(t *testing.T) {
+		machine, err := New(transitions.StatusUnknown, transitions.Typical)
+		require.NoError(t, err)
+
+		assert.False(t, machine.IsTerminal(), "Unknown self-loops, so it is not terminal")
+	})
+}

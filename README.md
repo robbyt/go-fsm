@@ -10,6 +10,7 @@ A finite state machine that supports custom states and allowed transitions with 
 ## Features
 
 - Define custom states and allowed transitions
+- Inspect allowed transitions from the current state (`IsTransitionAllowed`, `AvailableTransitions`, `IsTerminal`)
 - Thread-safe state management using atomic operations
 - Functional hook callbacks (pre-transition hooks, post-transition hooks)
 - Subscribe to state changes via channels with context support
@@ -504,6 +505,28 @@ err = machine.SetState("offline")
 
 // GetState: Returns the current state.
 currentState := machine.GetState()
+```
+
+### Inspecting Allowed Transitions
+
+These read-only helpers report what the FSM can do from its current state,
+without mutating it. They are useful for gating UI/decisions or detecting
+completion. Each is a lock-free, point-in-time snapshot (like `GetState`).
+
+```go
+// IsTransitionAllowed: is a transition to the given state allowed right now?
+if machine.IsTransitionAllowed("offline") {
+	_ = machine.Transition("offline")
+}
+
+// AvailableTransitions: the states reachable from the current state,
+// sorted alphabetically (empty when the current state is terminal).
+next := machine.AvailableTransitions() // e.g. []string{"offline"}
+
+// IsTerminal: true when the current state has no outgoing transitions.
+if machine.IsTerminal() {
+	// the machine has reached an end state
+}
 ```
 
 ## Complete Example

@@ -39,6 +39,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -172,6 +173,47 @@ func (fsm *Machine) GetState() string {
 // implementation must ensure their type is safe for concurrent reads.
 func (fsm *Machine) GetAllStates() []string {
 	return fsm.transitions.GetAllStates()
+}
+
+// IsTransitionAllowed reports whether a transition from the current state to
+// toState is permitted by the transition table. It mirrors
+// transitions.Config.IsTransitionAllowed with the current state as the source.
+// Like GetState, it takes no mutex and is a point-in-time snapshot, so the
+// result may be stale if a concurrent transition is in flight.
+func (fsm *Machine) IsTransitionAllowed(toState string) bool {
+	return fsm.transitions.IsTransitionAllowed(fsm.GetState(), toState)
+}
+
+// AvailableTransitions returns the states the FSM may transition to from its
+// current state, sorted alphabetically. It returns an empty slice when the
+// current state has no outgoing transitions — that is, when it is terminal or
+// not present in the transition table. Like GetState, this is a lock-free
+// point-in-time snapshot.
+func (fsm *Machine) AvailableTransitions() []string {
+	current := fsm.GetState()
+	allStates := fsm.transitions.GetAllStates()
+	available := make([]string, 0, len(allStates))
+	for _, state := range allStates {
+		if fsm.transitions.IsTransitionAllowed(current, state) {
+			available = append(available, state)
+		}
+	}
+	// Sort explicitly: the transitionDB contract does not guarantee
+	// GetAllStates ordering, but this method documents sorted output.
+	slices.Sort(available)
+	return available
+}
+
+// IsTerminal reports whether the current state has no outgoing transitions.
+// Like GetState, this is a lock-free point-in-time snapshot.
+func (fsm *Machine) IsTerminal() bool {
+	current := fsm.GetState()
+	for _, state := range fsm.transitions.GetAllStates() {
+		if fsm.transitions.IsTransitionAllowed(current, state) {
+			return false
+		}
+	}
+	return true
 }
 
 // SetState updates the FSM's state, bypassing transition rules and pre-transition hooks.
