@@ -29,7 +29,7 @@ import (
 type Manager struct {
 	mu          sync.Mutex
 	subscribers sync.Map
-	logger      slog.Handler
+	logger      *slog.Logger
 }
 
 // NewManager creates a new broadcast manager.
@@ -38,7 +38,7 @@ func NewManager(handler slog.Handler) *Manager {
 		handler = slog.Default().Handler()
 	}
 	return &Manager{
-		logger: handler,
+		logger: slog.New(handler.WithGroup("broadcast")),
 	}
 }
 
@@ -96,7 +96,7 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 // - timeout < 0: blocks indefinitely until delivered (guaranteed delivery)
 // The mutex ensures broadcasts are always serial to maintain consistent ordering.
 func (m *Manager) Broadcast(state string) {
-	logger := slog.New(m.logger.WithGroup("broadcast")).With("state", state)
+	logger := m.logger.With("state", state)
 
 	// Lock during the entire broadcast to ensure all subscribers receive broadcasts
 	// in the same order, preventing race conditions where concurrent broadcasts
@@ -181,7 +181,7 @@ func (m *Manager) iterSubscribers() iter.Seq2[chan string, *Config] {
 
 			config, ok := value.(*Config)
 			if !ok {
-				slog.New(m.logger).Error("Invalid subscriber config type; skipping subscriber")
+				m.logger.Error("Invalid subscriber config type; skipping subscriber")
 				return true
 			}
 
