@@ -1,6 +1,6 @@
 module github.com/robbyt/go-fsm/v2
 
-go 1.25.6
+go 1.26.4
 
 require github.com/stretchr/testify v1.11.1
 
