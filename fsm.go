@@ -174,6 +174,36 @@ func (fsm *Machine) GetAllStates() []string {
 	return fsm.transitions.GetAllStates()
 }
 
+// CanTransitionTo reports whether a transition from the current state to
+// toState is currently allowed by the transition table. It is a point-in-time
+// snapshot: like GetState, it takes no mutex, so the result may be stale if a
+// concurrent transition is in flight.
+func (fsm *Machine) CanTransitionTo(toState string) bool {
+	return fsm.transitions.IsTransitionAllowed(fsm.GetState(), toState)
+}
+
+// AvailableTransitions returns the states the FSM may transition to from its
+// current state, sorted alphabetically. It returns an empty slice when the
+// current state is terminal (or unknown). Like GetState, this is a lock-free
+// point-in-time snapshot.
+func (fsm *Machine) AvailableTransitions() []string {
+	current := fsm.GetState()
+	allStates := fsm.transitions.GetAllStates()
+	available := make([]string, 0, len(allStates))
+	for _, state := range allStates {
+		if fsm.transitions.IsTransitionAllowed(current, state) {
+			available = append(available, state)
+		}
+	}
+	return available
+}
+
+// IsTerminal reports whether the current state has no outgoing transitions.
+// Like GetState, this is a lock-free point-in-time snapshot.
+func (fsm *Machine) IsTerminal() bool {
+	return len(fsm.AvailableTransitions()) == 0
+}
+
 // SetState updates the FSM's state, bypassing transition rules and pre-transition hooks.
 // Returns an error if the state is not defined in the transition table.
 func (fsm *Machine) SetState(state string) error {
