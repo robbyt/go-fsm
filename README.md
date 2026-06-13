@@ -10,7 +10,7 @@ A finite state machine that supports custom states and allowed transitions with 
 ## Features
 
 - Define custom states and allowed transitions
-- Inspect allowed transitions from the current state (`CanTransitionTo`, `AvailableTransitions`, `IsTerminal`)
+- Inspect allowed transitions from the current state (`IsTransitionAllowed`, `AvailableTransitions`, `IsTerminal`)
 - Thread-safe state management using atomic operations
 - Functional hook callbacks (pre-transition hooks, post-transition hooks)
 - Subscribe to state changes via channels with context support
@@ -514,8 +514,8 @@ without mutating it. They are useful for gating UI/decisions or detecting
 completion. Each is a lock-free, point-in-time snapshot (like `GetState`).
 
 ```go
-// CanTransitionTo: is a transition to the given state allowed right now?
-if machine.CanTransitionTo("offline") {
+// IsTransitionAllowed: is a transition to the given state allowed right now?
+if machine.IsTransitionAllowed("offline") {
 	_ = machine.Transition("offline")
 }
 

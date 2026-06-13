@@ -1025,16 +1025,16 @@ func TestGetStateChan_InitialSendRespectsContext(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
-func TestFSM_CanTransitionTo(t *testing.T) {
+func TestFSM_IsTransitionAllowed(t *testing.T) {
 	t.Parallel()
 
 	machine, err := New(transitions.StatusRunning, transitions.Typical)
 	require.NoError(t, err)
 
-	assert.True(t, machine.CanTransitionTo(transitions.StatusReloading), "Running->Reloading is allowed")
-	assert.True(t, machine.CanTransitionTo(transitions.StatusError), "Running->Error is allowed")
-	assert.False(t, machine.CanTransitionTo(transitions.StatusNew), "Running->New is not allowed")
-	assert.False(t, machine.CanTransitionTo("nonexistent"), "unknown target is not allowed")
+	assert.True(t, machine.IsTransitionAllowed(transitions.StatusReloading), "Running->Reloading is allowed")
+	assert.True(t, machine.IsTransitionAllowed(transitions.StatusError), "Running->Error is allowed")
+	assert.False(t, machine.IsTransitionAllowed(transitions.StatusNew), "Running->New is not allowed")
+	assert.False(t, machine.IsTransitionAllowed("nonexistent"), "unknown target is not allowed")
 }
 
 func TestFSM_AvailableTransitions(t *testing.T) {
