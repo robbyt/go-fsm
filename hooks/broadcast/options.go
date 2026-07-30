@@ -39,10 +39,7 @@ type Config struct {
 // option overrides it: the channel will be owned by the manager and closed
 // when the context is cancelled.
 func WithBufferSize(size int) Option {
-	bufSize := size
-	if bufSize < 0 {
-		bufSize = 0
-	}
+	bufSize := max(size, 0)
 	return func(config *Config) {
 		config.channel = make(chan string, bufSize)
 		config.externalChannel = false

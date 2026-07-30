@@ -1132,9 +1132,7 @@ func TestRemoveHookConcurrentExecuteNoRace(t *testing.T) {
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -1146,7 +1144,7 @@ func TestRemoveHookConcurrentExecuteNoRace(t *testing.T) {
 				}
 			}
 		}
-	}()
+	})
 	// Always stop and join the executor goroutine, even if a require below
 	// fails early via FailNow, so it can't outlive the test and log after
 	// completion or interfere with later tests.
@@ -1155,7 +1153,7 @@ func TestRemoveHookConcurrentExecuteNoRace(t *testing.T) {
 		wg.Wait()
 	})
 
-	for i := 0; i < 2000; i++ {
+	for i := range 2000 {
 		name := fmt.Sprintf("churn-%d", i)
 		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
 			Name: name,
