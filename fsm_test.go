@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -38,12 +39,7 @@ func (m *mockTransitionDB) IsTransitionAllowed(from, to string) bool {
 	if !ok {
 		return false
 	}
-	for _, state := range allowed {
-		if state == to {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, to)
 }
 
 func (m *mockTransitionDB) HasState(state string) bool {
@@ -443,11 +439,9 @@ func TestFSM_Concurrency(t *testing.T) {
 
 		var wg sync.WaitGroup
 		for range 100 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				_ = fsm.GetState()
-			}()
+			})
 		}
 		wg.Wait()
 	})
@@ -463,20 +457,16 @@ func TestFSM_Concurrency(t *testing.T) {
 
 		var wg sync.WaitGroup
 		for range 50 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				// Error intentionally ignored - testing concurrent safety not success
 				//nolint:errcheck
 				_ = fsm.Transition("state2")
-			}()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			})
+			wg.Go(func() {
 				// Error intentionally ignored - testing concurrent safety not success
 				//nolint:errcheck
 				_ = fsm.Transition("state1")
-			}()
+			})
 		}
 		wg.Wait()
 
@@ -501,24 +491,20 @@ func TestFSM_Concurrency(t *testing.T) {
 
 		var wg sync.WaitGroup
 		for range 50 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				for range 20 {
 					states := fsm.GetAllStates()
 					assert.ElementsMatch(t, expected, states)
 				}
-			}()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			})
+			wg.Go(func() {
 				for range 20 {
 					//nolint:errcheck // racing for safety, not correctness
 					_ = fsm.Transition("state2")
 					//nolint:errcheck
 					_ = fsm.Transition("state1")
 				}
-			}()
+			})
 		}
 		wg.Wait()
 	})
@@ -759,8 +745,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 		fsm, err := New("state1", mockDB, WithCallbackRegistry(registry))
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		c := make(chan string, 10)
 		err = fsm.GetStateChan(ctx, c)
@@ -802,8 +787,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 		fsm, err := New("state1", mockDB, WithCallbackRegistry(registry))
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		// Register first channel
 		c1 := make(chan string, 10)
@@ -849,8 +833,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 
 		c := make(chan string, 10)
 		err = fsm.GetStateChan(ctx, c)
@@ -980,7 +963,7 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 		wg.Wait()
 	})
 
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := make(chan string, 256)
 		require.NoError(t, machine.GetStateChan(ctx, ch))

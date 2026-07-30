@@ -108,11 +108,11 @@ func TestFSM_JSONWithHooks(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify hooks are in JSON
-	var pState map[string]interface{}
+	var pState map[string]any
 	err = json.Unmarshal(jsonData, &pState)
 	require.NoError(t, err)
 	assert.Contains(t, pState, "hooks")
-	hooksList := pState["hooks"].([]interface{})
+	hooksList := pState["hooks"].([]any)
 	assert.Len(t, hooksList, 1)
 
 	// NewFromJSON should warn and drop hooks
@@ -180,12 +180,10 @@ func TestFSM_JSONConcurrency(t *testing.T) {
 
 		var wg sync.WaitGroup
 		for range 10 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				_, err := json.Marshal(fsm)
 				assert.NoError(t, err)
-			}()
+			})
 		}
 		wg.Wait()
 	})
@@ -241,11 +239,9 @@ func TestFSM_JSONConcurrency(t *testing.T) {
 
 		// Concurrent transitions (some may fail if FSM already in state2)
 		for range 5 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				_ = restoredFSM.Transition("state2") //nolint:errcheck
-			}()
+			})
 		}
 
 		wg.Wait()
@@ -262,24 +258,20 @@ func TestFSM_JSONConcurrency(t *testing.T) {
 
 		// Call GetAllStates on original FSM concurrently
 		for range 5 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				_ = originalFSM.GetAllStates()
-			}()
+			})
 		}
 
 		// Create new FSMs from JSON concurrently
 		for range 5 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				fsm, err := NewFromJSON(jsonData)
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				if fsm != nil {
 					_ = fsm.GetAllStates()
 				}
-			}()
+			})
 		}
 
 		wg.Wait()
