@@ -22,4 +22,16 @@ var (
 	// function (a nil Guard for a pre-transition hook or a nil Action for a
 	// post-transition hook).
 	ErrHookFuncNil = errors.New("hook function cannot be nil")
+
+	// ErrHookStatesEmpty is returned when registering a hook with an empty From
+	// or To state list
+	ErrHookStatesEmpty = errors.New("from and to state lists cannot be empty")
+
+	// ErrHookUnknownState is returned when a concrete state pattern is not
+	// present in the registry's transition table
+	ErrHookUnknownState = errors.New("unknown state")
+
+	// ErrHookWildcardUnsupported is returned when a wildcard pattern is used on
+	// a registry created without a transition table
+	ErrHookWildcardUnsupported = errors.New("wildcard '*' cannot be used without state table")
 )
