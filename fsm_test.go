@@ -2,16 +2,20 @@ package fsm
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/robbyt/go-fsm/v2/hooks"
+	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -112,6 +116,21 @@ func (m *mockCallbackExecutor) getReceivedContexts() []context.Context {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]context.Context(nil), m.receivedContexts...)
+}
+
+// mustSubscribe registers ch on m and fails the test if registration errors.
+// It returns the unsubscribe handle, which most callers ignore because the test
+// context ends the subscription.
+func mustSubscribe(t *testing.T, m *Machine, ctx context.Context, ch chan string) {
+	t.Helper()
+
+	require.NoError(t, m.GetStateChan(ctx, ch))
+}
+
+// subscribeErr returns just the error from a subscription attempt, for tests
+// asserting on rejection.
+func subscribeErr(m *Machine, ctx context.Context, ch chan string) error {
+	return m.GetStateChan(ctx, ch)
 }
 
 // Unit tests with mocked dependencies
@@ -673,6 +692,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 		//nolint:staticcheck // Intentionally testing nil context error
 		err = fsm.GetStateChan(nil, c)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 		assert.Contains(t, err.Error(), "context cannot be nil")
 	})
 
@@ -688,6 +708,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 		c := make(chan string, 1)
 		err = fsm.GetStateChan(ctx, c)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrNoCallbackRegistry)
 		assert.Contains(t, err.Error(), "GetStateChan requires a callback registry")
 	})
 
@@ -704,6 +725,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 		c := make(chan string, 1)
 		err = fsm.GetStateChan(ctx, c)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrNoCallbackRegistry)
 		assert.Contains(t, err.Error(), "requires a callback registry that supports dynamic hook registration")
 	})
 
@@ -918,8 +940,8 @@ func TestGetStateChan_SharedRegistry(t *testing.T) {
 
 	ch1 := make(chan string, 10)
 	ch2 := make(chan string, 10)
-	require.NoError(t, m1.GetStateChan(ctx, ch1))
-	require.NoError(t, m2.GetStateChan(ctx, ch2)) // previously failed permanently
+	mustSubscribe(t, m1, ctx, ch1)
+	mustSubscribe(t, m2, ctx, ch2) // previously failed permanently
 
 	// Each subscriber receives its own machine's initial state.
 	assert.Equal(t, transitions.StatusNew, <-ch1)
@@ -966,7 +988,7 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 	for i := range 500 {
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := make(chan string, 256)
-		require.NoError(t, machine.GetStateChan(ctx, ch))
+		mustSubscribe(t, machine, ctx, ch)
 
 		// Collect the initial value plus the first broadcast.
 		var got []string
@@ -1073,4 +1095,593 @@ func TestFSM_IsTerminal(t *testing.T) {
 
 		assert.False(t, machine.IsTerminal(), "Unknown self-loops, so it is not terminal")
 	})
+}
+
+// TestGetStateChan_NilChannelRejected verifies that a nil channel is rejected
+// before any state is touched. Previously the nil channel fell through to the
+// initial-state send, which blocks forever on a nil channel while holding the
+// FSM read lock; with a non-cancellable context that permanently wedged every
+// Transition, SetState, and MarshalJSON call on the machine.
+func TestGetStateChan_NilChannelRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Returns ErrNilStateChannel and leaves the machine usable", func(t *testing.T) {
+		reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+		require.NoError(t, err)
+		machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+		require.NoError(t, err)
+
+		err = machine.GetStateChan(context.Background(), nil)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrNilStateChannel)
+
+		// The rejection happens before setup, so no broadcast hook was registered.
+		assert.Empty(t, reg.GetHooks())
+
+		// The read lock was never taken: transitions still work.
+		require.NoError(t, machine.Transition(transitions.StatusBooting))
+		assert.Equal(t, transitions.StatusBooting, machine.GetState())
+
+		// Setup was not consumed: a later valid subscription still succeeds.
+		ch := make(chan string, 1)
+		mustSubscribe(t, machine, t.Context(), ch)
+		assert.Equal(t, transitions.StatusBooting, <-ch)
+	})
+
+	t.Run("Spawns no goroutine and registers no subscriber", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+			require.NoError(t, err)
+			machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+			require.NoError(t, err)
+
+			// context.Background() is deliberate: on the old code both this call
+			// and the manager's cleanup goroutine block on it forever, which the
+			// bubble reports as a deadlock.
+			require.ErrorIs(t, subscribeErr(machine, context.Background(), nil), ErrNilStateChannel)
+			synctest.Wait()
+
+			require.NoError(t, machine.Transition(transitions.StatusBooting))
+		})
+	})
+}
+
+// mockHookRegistrar implements HookRegistrar but deliberately NOT HookRemover,
+// to exercise Close against a callback executor that cannot remove hooks.
+type mockHookRegistrar struct {
+	*mockCallbackExecutor
+}
+
+func newMockHookRegistrar() *mockHookRegistrar {
+	return &mockHookRegistrar{mockCallbackExecutor: newMockCallbackExecutor()}
+}
+
+func (m *mockHookRegistrar) RegisterPostTransitionHook(hooks.PostTransitionHookConfig) error {
+	return nil
+}
+
+func (m *mockHookRegistrar) RegisterPreTransitionHook(hooks.PreTransitionHookConfig) error {
+	return nil
+}
+
+// broadcastHookNames returns the names of the broadcast hooks GetStateChan has
+// registered on reg, sorted.
+func broadcastHookNames(t *testing.T, reg *hooks.Registry) []string {
+	t.Helper()
+
+	var names []string
+	for _, info := range reg.GetHooks() {
+		if strings.HasPrefix(info.Name, "fsm.GetStateChan.") {
+			names = append(names, info.Name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// TestGetStateChan_HookNamesAreUniquePerMachine pins the broadcast hook naming
+// contract: each Machine uses its own process-unique id. The previous %p form
+// was not unique over time, because a garbage-collected Machine's address can be
+// reused by a later allocation sharing the same registry.
+func TestGetStateChan_HookNamesAreUniquePerMachine(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+
+	m1, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	m2, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	mustSubscribe(t, m1, t.Context(), make(chan string, 1))
+	mustSubscribe(t, m2, t.Context(), make(chan string, 1))
+
+	names := broadcastHookNames(t, reg)
+	require.Len(t, names, 2)
+	assert.NotEqual(t, names[0], names[1])
+	assert.NotEqual(t, m1.hookName, m2.hookName)
+	assert.Equal(t, fmt.Sprintf("fsm.GetStateChan.%d", m1.id), m1.hookName)
+}
+
+// TestMachineClose_RemovesHookFromSharedRegistry verifies the core of the fix:
+// a Machine discarded from a shared registry can release its broadcast hook, so
+// it stops firing on every other Machine's transitions.
+func TestMachineClose_RemovesHookFromSharedRegistry(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+
+	m1, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	m2, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	ch1 := make(chan string, 10)
+	ch2 := make(chan string, 10)
+	mustSubscribe(t, m1, t.Context(), ch1)
+	mustSubscribe(t, m2, t.Context(), ch2)
+	assert.Equal(t, transitions.StatusNew, <-ch1)
+	assert.Equal(t, transitions.StatusNew, <-ch2)
+
+	require.Len(t, broadcastHookNames(t, reg), 2)
+
+	m2Hook := m2.hookName
+	require.NoError(t, m1.Close())
+
+	// Only m2's hook survives.
+	assert.Equal(t, []string{m2Hook}, broadcastHookNames(t, reg))
+
+	// m1 still transitions, but no longer broadcasts.
+	require.NoError(t, m1.Transition(transitions.StatusBooting))
+	require.Never(t, func() bool {
+		select {
+		case <-ch1:
+			return true
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "closed machine must not broadcast")
+
+	// m2 is unaffected.
+	require.NoError(t, m2.Transition(transitions.StatusBooting))
+	require.Eventually(t, func() bool {
+		select {
+		case state := <-ch2:
+			return assert.Equal(t, transitions.StatusBooting, state)
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "the surviving machine must still broadcast")
+}
+
+// TestMachineClose_Idempotent verifies repeated Close calls are safe.
+func TestMachineClose_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	mustSubscribe(t, machine, t.Context(), make(chan string, 1))
+	require.NoError(t, machine.Close())
+	require.NoError(t, machine.Close())
+	assert.Empty(t, broadcastHookNames(t, reg))
+}
+
+// TestMachineClose_BeforeGetStateChan verifies Close on a Machine that never
+// subscribed, and that GetStateChan is refused afterwards.
+func TestMachineClose_BeforeGetStateChan(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	require.NoError(t, machine.Close())
+	assert.Empty(t, reg.GetHooks())
+
+	require.ErrorIs(t, subscribeErr(machine, t.Context(), make(chan string, 1)), ErrMachineClosed)
+}
+
+// TestMachineClose_MachineStaysUsable verifies that Close releases only the
+// subscription plumbing: state operations and caller-registered hooks continue
+// to work.
+func TestMachineClose_MachineStaysUsable(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+
+	userHookCalls := 0
+	require.NoError(t, reg.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name: "user-hook",
+		From: []string{"*"},
+		To:   []string{"*"},
+		Action: func(ctx context.Context, from, to string) {
+			userHookCalls++
+		},
+	}))
+
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	mustSubscribe(t, machine, t.Context(), make(chan string, 1))
+	require.NoError(t, machine.Close())
+
+	require.NoError(t, machine.Transition(transitions.StatusBooting))
+	assert.Equal(t, transitions.StatusBooting, machine.GetState())
+	require.NoError(t, machine.SetState(transitions.StatusRunning))
+	assert.Equal(t, transitions.StatusRunning, machine.GetState())
+	assert.Equal(t, 2, userHookCalls, "caller-registered hooks must still fire after Close")
+
+	// The caller's own hook is untouched by Close.
+	assert.Len(t, reg.GetHooks(), 1)
+}
+
+// TestMachineClose_RegistrarWithoutRemoveHook verifies that a callback executor
+// which cannot remove hooks produces an error naming the orphaned hook, while
+// still marking the machine closed and releasing its subscribers.
+func TestMachineClose_RegistrarWithoutRemoveHook(t *testing.T) {
+	t.Parallel()
+
+	registrar := newMockHookRegistrar()
+	mockDB := newMockTransitionDB(map[string][]string{
+		"state1": {"state2"},
+		"state2": {},
+	})
+
+	machine, err := New("state1", mockDB, WithCallbackRegistry(registrar))
+	require.NoError(t, err)
+
+	ch := make(chan string, 1)
+	mustSubscribe(t, machine, t.Context(), ch)
+
+	hookName := machine.hookName // Close clears it, so capture it first
+
+	err = machine.Close()
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidConfiguration)
+	assert.Contains(t, err.Error(), hookName, "the orphaned hook must be named so it can be removed by hand")
+
+	// Closed regardless of the failure, and the error is remembered.
+	require.ErrorIs(t, subscribeErr(machine, t.Context(), make(chan string, 1)), ErrMachineClosed)
+	assert.Equal(t, err.Error(), machine.Close().Error(), "the teardown error must be cached, not forgotten")
+}
+
+// TestGetStateChan_CancellationStopsDelivery verifies that cancelling the
+// subscription's context stops delivery and frees the channel for re-use. This
+// is the only per-subscription teardown path: the caller owns the channel, and
+// scopes its lifetime with the context it subscribed under.
+func TestGetStateChan_CancellationStopsDelivery(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := machine.Close(); err != nil {
+			t.Errorf("Close returned an error: %v", err)
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan string, 10)
+	mustSubscribe(t, machine, ctx, ch)
+	assert.Equal(t, transitions.StatusNew, <-ch)
+
+	require.NoError(t, machine.Transition(transitions.StatusBooting))
+	require.Eventually(t, func() bool {
+		select {
+		case state := <-ch:
+			return assert.Equal(t, transitions.StatusBooting, state)
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "expected the live subscriber to receive the transition")
+
+	cancel()
+
+	// Teardown runs on its own goroutine, so wait for delivery to actually stop
+	// before asserting silence.
+	require.Eventually(t, func() bool {
+		if err := machine.Transition(transitions.StatusRunning); err != nil {
+			return false
+		}
+		if err := machine.SetState(transitions.StatusRunning); err != nil {
+			return false
+		}
+		select {
+		case <-ch:
+			return false
+		default:
+			return true
+		}
+	}, 500*time.Millisecond, 10*time.Millisecond, "cancelled subscriber should stop receiving states")
+
+	// The channel is free to subscribe again under a fresh context.
+	mustSubscribe(t, machine, t.Context(), ch)
+	assert.Equal(t, transitions.StatusRunning, <-ch)
+}
+
+// TestGetStateChan_DuplicateChannelRejectedOnMachine verifies that the
+// duplicate-subscription sentinel propagates through Machine.GetStateChan.
+func TestGetStateChan_DuplicateChannelRejectedOnMachine(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	ch := make(chan string, 10)
+	mustSubscribe(t, machine, t.Context(), ch)
+	assert.Equal(t, transitions.StatusNew, <-ch)
+
+	require.ErrorIs(t, subscribeErr(machine, t.Context(), ch), broadcast.ErrChannelAlreadySubscribed)
+
+	// The first subscription is still live, and receives exactly one copy.
+	require.NoError(t, machine.Transition(transitions.StatusBooting))
+	require.Eventually(t, func() bool {
+		select {
+		case state := <-ch:
+			return assert.Equal(t, transitions.StatusBooting, state)
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "the original subscription should still be live")
+	assert.Empty(t, ch, "state should be delivered exactly once")
+}
+
+// TestGetStateChan_SameChannelOnTwoMachinesAllowed verifies that the
+// duplicate-subscription rule is per-Machine, not global.
+func TestGetStateChan_SameChannelOnTwoMachinesAllowed(t *testing.T) {
+	t.Parallel()
+
+	reg1, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	reg2, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+
+	m1, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg1))
+	require.NoError(t, err)
+	m2, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg2))
+	require.NoError(t, err)
+
+	ch := make(chan string, 10)
+	mustSubscribe(t, m1, t.Context(), ch)
+	mustSubscribe(t, m2, t.Context(), ch)
+
+	// Both initial states arrive on the shared channel.
+	assert.Equal(t, transitions.StatusNew, <-ch)
+	assert.Equal(t, transitions.StatusNew, <-ch)
+}
+
+// TestGetStateChan_RetriesAfterFailedSetup verifies that a failed hook
+// registration is no longer cached permanently. The sync.Once this replaced
+// stored the error forever, so one transient failure poisoned the machine.
+func TestGetStateChan_RetriesAfterFailedSetup(t *testing.T) {
+	t.Parallel()
+
+	// A registry without WithTransitions cannot accept the wildcard broadcast hook.
+	badReg, err := hooks.NewRegistry()
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(badReg))
+	require.NoError(t, err)
+
+	err1 := machine.GetStateChan(t.Context(), make(chan string, 1))
+	require.Error(t, err1)
+	assert.Contains(t, err1.Error(), "wildcard")
+
+	// The second attempt genuinely retries rather than replaying a cached error.
+	err2 := machine.GetStateChan(t.Context(), make(chan string, 1))
+	require.Error(t, err2)
+	assert.Equal(t, err1.Error(), err2.Error())
+
+	// A machine with a good registry is unaffected.
+	goodReg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	good, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(goodReg))
+	require.NoError(t, err)
+	mustSubscribe(t, good, t.Context(), make(chan string, 1))
+}
+
+// TestMachineClose_ConcurrentCalls verifies that concurrent Close calls agree on
+// one outcome and remove the hook exactly once.
+func TestMachineClose_ConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	mustSubscribe(t, machine, t.Context(), make(chan string, 1))
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			if err := machine.Close(); err != nil {
+				t.Errorf("concurrent Close returned an error: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	assert.Empty(t, broadcastHookNames(t, reg))
+}
+
+// TestMachineClose_RacingGetStateChan verifies that Close and GetStateChan
+// cannot interleave into a subscriber attached to a manager Close has already
+// detached. Either GetStateChan wins and its subscription is then released by
+// Close, or Close wins and GetStateChan is refused.
+func TestMachineClose_RacingGetStateChan(t *testing.T) {
+	t.Parallel()
+
+	for range 200 {
+		reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+		require.NoError(t, err)
+		machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+		require.NoError(t, err)
+
+		ch := make(chan string, 1)
+
+		var wg sync.WaitGroup
+		var subErr error
+		wg.Go(func() { subErr = machine.GetStateChan(context.Background(), ch) })
+		wg.Go(func() {
+			// The racing Close may legitimately be the first or second caller;
+			// either way it must not error.
+			if err := machine.Close(); err != nil {
+				t.Errorf("racing Close returned an error: %v", err)
+			}
+		})
+		wg.Wait()
+
+		if subErr != nil {
+			require.ErrorIs(t, subErr, ErrMachineClosed)
+		}
+		// Either way the machine ends up closed with no lingering hook.
+		require.NoError(t, machine.Close())
+		assert.Empty(t, broadcastHookNames(t, reg))
+	}
+}
+
+// TestMachineClose_FromWithinAHook verifies the documented guarantee that Close
+// is safe to call from a transition hook: it never takes the FSM mutex, and the
+// hook executors release the registry lock before running hooks.
+func TestMachineClose_FromWithinAHook(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+
+	var machine *Machine
+	closeErr := make(chan error, 1)
+	require.NoError(t, reg.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name: "closer",
+		From: []string{"*"},
+		To:   []string{transitions.StatusBooting},
+		Action: func(ctx context.Context, from, to string) {
+			closeErr <- machine.Close()
+		},
+	}))
+
+	machine, err = New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	mustSubscribe(t, machine, t.Context(), make(chan string, 10))
+
+	// Must not deadlock.
+	require.NoError(t, machine.Transition(transitions.StatusBooting))
+	require.NoError(t, <-closeErr)
+
+	assert.Empty(t, broadcastHookNames(t, reg))
+	// The machine remains usable for state operations.
+	require.NoError(t, machine.Transition(transitions.StatusRunning))
+}
+
+// TestGetStateChan_InitialSendCancelledMidFlight covers the initial-send
+// cancellation path. Its sibling, TestGetStateChan_InitialSendRespectsContext,
+// pre-cancels the context and so is now rejected by the broadcast manager before
+// the send is ever reached; this exercises a cancellation that lands while the
+// send is genuinely blocked on a full channel.
+func TestGetStateChan_InitialSendCancelledMidFlight(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+		require.NoError(t, err)
+		machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		ch := make(chan string) // unbuffered, no reader: the initial send blocks
+
+		var subErr error
+		done := make(chan struct{})
+		go func() {
+			subErr = machine.GetStateChan(ctx, ch)
+			close(done)
+		}()
+
+		// Let the subscription reach the blocked send before cancelling.
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("GetStateChan returned before the initial send could block")
+		default:
+		}
+
+		cancel()
+		synctest.Wait()
+
+		<-done
+		require.ErrorIs(t, subErr, context.Canceled)
+	})
+}
+
+// mockFailingRemover implements HookRegistrar and HookRemover, with a RemoveHook
+// that always fails, to cover Close's hook-removal error path.
+type mockFailingRemover struct {
+	*mockCallbackExecutor
+	removeErr error
+}
+
+func (m *mockFailingRemover) RegisterPostTransitionHook(hooks.PostTransitionHookConfig) error {
+	return nil
+}
+
+func (m *mockFailingRemover) RegisterPreTransitionHook(hooks.PreTransitionHookConfig) error {
+	return nil
+}
+
+func (m *mockFailingRemover) RemoveHook(string) error { return m.removeErr }
+
+// TestMachineClose_HookRemovalFails verifies that a registry which accepts the
+// hook but fails to remove it surfaces the failure, names the orphaned hook, and
+// still leaves the machine closed rather than half-open.
+func TestMachineClose_HookRemovalFails(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("registry exploded")
+	registrar := &mockFailingRemover{
+		mockCallbackExecutor: newMockCallbackExecutor(),
+		removeErr:            sentinel,
+	}
+	mockDB := newMockTransitionDB(map[string][]string{
+		"state1": {"state2"},
+		"state2": {},
+	})
+
+	machine, err := New("state1", mockDB, WithCallbackRegistry(registrar))
+	require.NoError(t, err)
+	mustSubscribe(t, machine, t.Context(), make(chan string, 1))
+
+	hookName := machine.hookName
+
+	err = machine.Close()
+	require.ErrorIs(t, err, sentinel)
+	assert.Contains(t, err.Error(), hookName)
+
+	// Closed despite the failure, and the error is remembered rather than
+	// silently forgotten on the next call.
+	require.ErrorIs(t, subscribeErr(machine, t.Context(), make(chan string, 1)), ErrMachineClosed)
+	require.ErrorIs(t, machine.Close(), sentinel)
+}
+
+// TestMachineClose_ToleratesAlreadyRemovedHook verifies that a hook the caller
+// removed themselves is not treated as a Close failure.
+func TestMachineClose_ToleratesAlreadyRemovedHook(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	mustSubscribe(t, machine, t.Context(), make(chan string, 1))
+
+	require.NoError(t, reg.RemoveHook(machine.hookName))
+	require.NoError(t, machine.Close(), "a hook already removed by the caller is not a Close failure")
 }

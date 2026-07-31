@@ -167,6 +167,15 @@ machine, err := fsm.New(
 
 ### Step 7: Migrate GetStateChan Usage (Critical)
 
+> **New in v2.5:** `machine.Close()` releases every subscriber and removes the
+> machine's broadcast hook from the registry — call it when discarding a machine
+> whose `hooks.Registry` outlives it. Three other behaviours tightened in the
+> same release: subscribing the same channel twice on one machine now returns
+> `broadcast.ErrChannelAlreadySubscribed`, subscribing with an already-cancelled
+> context now fails deterministically instead of racing, and passing a nil
+> channel returns `fsm.ErrNilStateChannel` rather than deadlocking the machine.
+
+
 This changed significantly in v2. The v2 API provides a built-in helper method on the FSM.
 
 #### Decision Guide: Which Broadcasting Pattern Should You Use?
@@ -571,6 +580,7 @@ Use this checklist to verify your migration:
 - [ ] Updated `fsm.New()` constructor calls (moved handler to options)
 - [ ] Migrated `GetStateChan()` to use `machine.GetStateChan(ctx, chan)` with hooks.Registry
 - [ ] Added `WithBroadcastTimeout()` option if custom timeout needed (replaces `WithSyncTimeout`)
+- [ ] Called `machine.Close()` for machines sharing a long-lived `hooks.Registry` (v2.5+)
 - [ ] **Created single abstraction constructor (if architecture supports it)**
 - [ ] Updated all tests
 - [ ] Verified with `go build ./...`

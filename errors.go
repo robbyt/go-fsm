@@ -35,3 +35,15 @@ var ErrEmptyTransitions = errors.New("transitions cannot be empty")
 
 // ErrInvalidJSONTransitions is returned when JSON transitions configuration is invalid
 var ErrInvalidJSONTransitions = errors.New("invalid transitions in JSON")
+
+// ErrNilStateChannel is returned when GetStateChan is called with a nil channel
+var ErrNilStateChannel = errors.New("state channel cannot be nil")
+
+// ErrNoCallbackRegistry is returned when GetStateChan is called on a Machine
+// that has no callback registry, or one that does not support dynamic hook
+// registration
+var ErrNoCallbackRegistry = errors.New("GetStateChan requires a callback registry")
+
+// ErrMachineClosed is returned when GetStateChan is called on a Machine whose
+// broadcast plumbing has been released by Close
+var ErrMachineClosed = errors.New("machine is closed")

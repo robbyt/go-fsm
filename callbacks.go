@@ -45,3 +45,15 @@ type HookRegistrar interface {
 	RegisterPostTransitionHook(config hooks.PostTransitionHookConfig) error
 	RegisterPreTransitionHook(config hooks.PreTransitionHookConfig) error
 }
+
+// HookRemover is the optional interface a CallbackExecutor may implement to
+// support removing a previously registered hook by name. Machine.Close uses it
+// to remove the broadcast hook installed by GetStateChan; a CallbackExecutor
+// that does not implement it makes Close return an error naming the hook that
+// must be removed by hand. The hooks.Registry type implements this interface.
+//
+// It is deliberately separate from HookRegistrar: adding a method to that
+// interface would break every third-party implementation of it.
+type HookRemover interface {
+	RemoveHook(name string) error
+}

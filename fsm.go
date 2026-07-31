@@ -37,6 +37,7 @@ package fsm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -56,7 +57,10 @@ import (
 // (GetAllStates, HasState, IsTransitionAllowed all run lock-free), so any
 // locking or copying needed for read safety is the implementation's
 // responsibility. The bundled transitions.Config satisfies this contract:
-// its index is built once at construction and never mutated.
+// its index is built once at construction and never mutated. The one exception
+// is transitions.Config.UnmarshalJSON, which rebuilds the config in place; see
+// its doc comment. Never unmarshal into a Config that is already attached to a
+// Machine.
 type transitionDB interface {
 	HasState(state string) bool
 	GetAllStates() []string
@@ -73,11 +77,32 @@ type Machine struct {
 	callbacks   CallbackExecutor
 	logger      *slog.Logger
 
-	broadcastManager  *broadcast.Manager
-	broadcastTimeout  time.Duration
-	stateChanSetup    sync.Once
-	stateChanSetupErr error
+	broadcastTimeout time.Duration
+
+	// id is a process-unique identifier assigned by New, used to build a
+	// collision-free name for this Machine's broadcast hook. A Machine built
+	// without New (the zero value) gets id 0, but such a Machine already fails
+	// on any transition, so it is not guarded here.
+	id uint64
+
+	// subMu gates the lazily-created broadcast plumbing below. It is separate
+	// from mutex on purpose: a broadcast runs from a post-transition hook while
+	// mutex is held for writing, so Close must never take mutex -- it has to be
+	// able to reach the broadcast manager to release exactly that broadcast.
+	//
+	// Nested lock order: mutex -> subMu. Never acquire mutex while holding subMu.
+	subMu            sync.RWMutex
+	broadcastManager *broadcast.Manager
+	hookName         string
+	closed           bool
+	closeErr         error
 }
+
+// machineIDCounter stamps each Machine with a process-unique id. A pointer
+// (%p) is not unique over time: a garbage-collected Machine's address can be
+// reused by a later allocation, and on a shared registry that produced a
+// spurious ErrHookNameAlreadyExists for the new Machine.
+var machineIDCounter atomic.Uint64
 
 // New creates a finite state machine with the specified initial state and transitions.
 // For simpler usage with inline maps, see NewSimple().
@@ -119,6 +144,7 @@ func New(
 		transitions:      trans,
 		logger:           slog.New(handler),
 		broadcastTimeout: 100 * time.Millisecond,
+		id:               machineIDCounter.Add(1),
 	}
 	m.state.Store(initialState)
 
@@ -368,17 +394,27 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 // The registry must be created with WithTransitions() to support wildcard pattern matching.
 // Returns an error if the callback executor does not support dynamic hook registration.
 //
-// The channel will automatically receive all future state transitions until the context
-// is cancelled, at which point it is automatically unsubscribed from receiving further broadcasts.
-// The channel is NOT closed; the caller maintains ownership and is responsible for channel lifecycle.
+// The channel receives all future state transitions until the context is cancelled, or
+// the Machine is closed with Close — whichever comes first. The channel is NOT closed;
+// the caller maintains ownership and is responsible for its lifecycle, and must not
+// close it while it is still subscribed.
+//
+// Passing a non-cancellable context (context.Background()) is supported, but then Close
+// is the only way to end the subscription: a subscriber that is simply dropped stays
+// registered for the life of the Machine. Prefer a cancellable context.
 //
 // GetStateChan can be called multiple times with different channels and contexts. All channels
 // share the same broadcast manager, which is lazily initialized only once upon the first call.
+// A channel may hold only one live subscription per Machine; subscribing the same channel twice
+// returns broadcast.ErrChannelAlreadySubscribed. Re-subscribing a channel whose previous
+// subscription has ended is allowed, as is subscribing one channel to several Machines.
+// An already-cancelled context is rejected.
 //
 // Each Machine registers its broadcast hook under a name unique to that Machine, so a single
 // hooks.Registry may be shared across Machines without GetStateChan failing. Note, however, that
-// hooks registered on a shared registry fire for every Machine's transitions; prefer one registry
-// per Machine unless that shared behavior is intended.
+// hooks registered on a shared registry fire for every Machine's transitions. When sharing a
+// registry, call Close on a Machine you are discarding, or its broadcast hook keeps firing on
+// every other Machine's transitions for the life of the registry.
 //
 // Broadcast delivery behavior is controlled by the timeout configured via WithBroadcastTimeout:
 //   - timeout = 0: best-effort delivery (non-blocking, drops if channel is full)
@@ -389,7 +425,8 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 //
 // The channel must be bidirectional (chan string, not <-chan string) to allow the FSM
 // to send state updates. The caller maintains ownership of the channel and controls
-// its buffer size and lifecycle.
+// its buffer size and lifecycle. It must be non-nil; a nil channel returns
+// ErrNilStateChannel without registering a subscriber.
 //
 // Example:
 //
@@ -424,35 +461,29 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 //	}()
 func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 	if ctx == nil {
-		return fmt.Errorf("context cannot be nil")
+		return fmt.Errorf("%w: context cannot be nil", ErrInvalidConfiguration)
+	}
+
+	// Reject a nil channel before anything is registered. A nil channel makes the
+	// initial-state send below block forever, and because that send happens under
+	// the FSM read lock it would wedge every subsequent Transition, SetState, and
+	// MarshalJSON on this machine, with no way to recover when the context is not
+	// cancellable.
+	if c == nil {
+		return ErrNilStateChannel
 	}
 
 	if fsm.callbacks == nil {
-		return fmt.Errorf("GetStateChan requires a callback registry")
+		return ErrNoCallbackRegistry
 	}
 
 	registrar, ok := fsm.callbacks.(HookRegistrar)
 	if !ok {
-		return fmt.Errorf("GetStateChan requires a callback registry that supports dynamic hook registration")
+		return fmt.Errorf("%w that supports dynamic hook registration", ErrNoCallbackRegistry)
 	}
 
-	fsm.stateChanSetup.Do(func() {
-		fsm.broadcastManager = broadcast.NewManager(fsm.logger.Handler())
-
-		// Use a per-machine hook name so multiple machines can share one
-		// registry. A constant name would collide on the second machine
-		// (ErrHookNameAlreadyExists), and because the error is cached in the
-		// sync.Once that machine's GetStateChan would then fail permanently.
-		fsm.stateChanSetupErr = registrar.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-			Name:   fmt.Sprintf("fsm.GetStateChan.%p", fsm),
-			From:   []string{"*"},
-			To:     []string{"*"},
-			Action: fsm.broadcastManager.BroadcastHook,
-		})
-	})
-
-	if fsm.stateChanSetupErr != nil {
-		return fsm.stateChanSetupErr
+	if _, err := fsm.ensureBroadcast(registrar); err != nil {
+		return err
 	}
 
 	// Register the subscriber and send the current state while holding the read
@@ -466,6 +497,18 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 	fsm.mutex.RLock()
 	defer fsm.mutex.RUnlock()
 
+	// subMu is held for reading across registration and the initial send so a
+	// concurrent Close cannot detach the manager underneath us and leave this
+	// subscriber permanently silent. Close takes it for writing, so it waits for
+	// subscriptions already in flight and blocks new ones. Both are read locks
+	// here, so concurrent GetStateChan callers still proceed in parallel.
+	fsm.subMu.RLock()
+	defer fsm.subMu.RUnlock()
+
+	if fsm.closed {
+		return ErrMachineClosed
+	}
+
 	_, err := fsm.broadcastManager.GetStateChan(
 		ctx,
 		broadcast.WithCustomChannel(c),
@@ -478,11 +521,118 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 	// Honor the context during the initial send so a full/unbuffered channel
 	// cannot block here (and thus block transitions, since we hold the read
 	// lock) past the caller's cancellation. The subscriber is unsubscribed by
-	// the same ctx cancellation via the broadcast manager's cleanup goroutine.
+	// the same ctx cancellation, via the broadcast manager.
 	select {
 	case c <- fsm.GetState():
 	case <-ctx.Done():
 		return fmt.Errorf("state channel registration canceled: %w", ctx.Err())
+	}
+
+	return nil
+}
+
+// ensureBroadcast lazily creates this Machine's broadcast manager and registers
+// its post-transition broadcast hook, returning the manager.
+//
+// It replaces a sync.Once, which Close made untenable: a Once cannot be undone,
+// reading the manager it writes from a goroutine that never called Do would be a
+// data race, and a cached setup error permanently poisoned the Machine. A failed
+// setup is no longer cached -- the next call retries.
+//
+// subMu is released before returning, so this never holds it while acquiring
+// fsm.mutex and therefore does not participate in the mutex -> subMu order.
+func (fsm *Machine) ensureBroadcast(registrar HookRegistrar) (*broadcast.Manager, error) {
+	fsm.subMu.Lock()
+	defer fsm.subMu.Unlock()
+
+	if fsm.closed {
+		return nil, ErrMachineClosed
+	}
+
+	if fsm.broadcastManager != nil {
+		return fsm.broadcastManager, nil
+	}
+
+	manager := broadcast.NewManager(fsm.logger.Handler())
+
+	// Name the hook after this Machine's process-unique id so several Machines
+	// can share one registry without colliding.
+	name := fmt.Sprintf("fsm.GetStateChan.%d", fsm.id)
+	if err := registrar.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name:   name,
+		From:   []string{"*"},
+		To:     []string{"*"},
+		Action: manager.BroadcastHook,
+	}); err != nil {
+		return nil, err
+	}
+
+	fsm.broadcastManager = manager
+	fsm.hookName = name
+
+	return manager, nil
+}
+
+// Close releases only the state-subscription resources this Machine created:
+// it ends every live GetStateChan subscription and removes the broadcast hook
+// that GetStateChan registered on the callback registry. It does NOT stop the
+// Machine -- GetState, Transition, SetState, MarshalJSON, and every hook the
+// caller registered themselves keep working exactly as before.
+//
+// Call it when discarding a Machine whose hooks.Registry outlives it (a shared
+// registry). Otherwise that hook, and the broadcast manager behind it, keep
+// firing on every transition of every other Machine using that registry.
+//
+// Channels supplied to GetStateChan are owned by the caller and are not closed;
+// their subscribers see silence, exactly as when their context is cancelled.
+// After Close, GetStateChan returns ErrMachineClosed.
+//
+// Close is idempotent, but it does not forget a failure: if removing the hook
+// fails, every subsequent call returns that same error, because a silently
+// orphaned hook is the exact condition Close exists to prevent.
+//
+// Close blocks while an in-flight broadcast completes, and can block for as long
+// as a concurrent GetStateChan holds the subscription gate -- which, with an
+// unbuffered channel and a non-cancellable context, may be indefinitely. It is
+// safe to call from a transition hook: Close never takes the FSM mutex, and hook
+// executors release the registry lock before running hooks.
+func (fsm *Machine) Close() error {
+	fsm.subMu.Lock()
+	defer fsm.subMu.Unlock()
+
+	if fsm.closed {
+		return fsm.closeErr
+	}
+	fsm.closed = true
+
+	manager, hookName := fsm.broadcastManager, fsm.hookName
+	if manager == nil {
+		// GetStateChan was never called: nothing was ever registered.
+		return nil
+	}
+
+	// Release subscribers first. UnsubscribeAll signals every subscription
+	// before taking the manager mutex, so it cannot be blocked by the very
+	// broadcast it is trying to free.
+	manager.UnsubscribeAll()
+	fsm.broadcastManager = nil
+	fsm.hookName = ""
+
+	remover, ok := fsm.callbacks.(HookRemover)
+	if !ok {
+		// Still closed and still unsubscribed: a partial failure must not leave
+		// the Machine half-open. Name the hook so it can be removed by hand.
+		fsm.closeErr = fmt.Errorf(
+			"%w: callback registry does not support removing hooks; hook %q is orphaned",
+			ErrInvalidConfiguration, hookName,
+		)
+		return fsm.closeErr
+	}
+
+	// A hook the caller already removed is not an error.
+	if err := remover.RemoveHook(hookName); err != nil && !errors.Is(err, hooks.ErrHookNotFound) {
+		fsm.closeErr = fmt.Errorf("failed to remove broadcast hook %q: %w", hookName, err)
+		return fsm.closeErr
 	}
 
 	return nil

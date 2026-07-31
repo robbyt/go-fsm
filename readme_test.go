@@ -361,6 +361,42 @@ func TestReadme_SubscribingToStateChanges(t *testing.T) {
 	})
 }
 
+// TestReadme_EndingASubscription tests the "Ending a Subscription" example from
+// README.md: cancelling the context ends the subscription, and Close releases a
+// machine that shares a registry.
+func TestReadme_EndingASubscription(t *testing.T) {
+	t.Parallel()
+
+	sharedRegistry, err := hooks.NewRegistry(
+		hooks.WithLogHandler(slog.Default().Handler()),
+		hooks.WithTransitions(transitions.Typical),
+	)
+	require.NoError(t, err)
+
+	machine, err := New(
+		transitions.StatusNew,
+		transitions.Typical,
+		WithCallbackRegistry(sharedRegistry),
+	)
+	require.NoError(t, err)
+	defer func() {
+		// README: defer machine.Close()
+		require.NoError(t, machine.Close())
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stateChan := make(chan string, 10)
+	mustSubscribe(t, machine, ctx, stateChan)
+	assert.Equal(t, transitions.StatusNew, <-stateChan)
+
+	// README: cancelling the context ends the subscription.
+	cancel()
+
+	// The machine keeps working afterwards.
+	require.NoError(t, machine.Transition(transitions.StatusBooting))
+	assert.Equal(t, transitions.StatusBooting, machine.GetState())
+}
+
 // TestReadme_StateTransitionOperations tests state transition examples from README.md
 func TestReadme_StateTransitionOperations(t *testing.T) {
 	t.Parallel()
