@@ -37,6 +37,14 @@ func (h HookType) String() string {
 }
 
 // PreTransitionHookConfig contains configuration for registering a pre-transition hook.
+//
+// From and To are copied at registration, so the caller may reuse or mutate the
+// slices once the register call has returned. They must not be mutated
+// concurrently with the registration call itself, since copying reads them.
+//
+// Duplicate entries in From or To are ignored for matching purposes: the hook
+// fires once per matching transition regardless. GetHooks still reports the
+// patterns exactly as registered.
 type PreTransitionHookConfig struct {
 	Name  string
 	From  []string
@@ -45,6 +53,14 @@ type PreTransitionHookConfig struct {
 }
 
 // PostTransitionHookConfig contains configuration for registering a post-transition hook.
+//
+// From and To are copied at registration, so the caller may reuse or mutate the
+// slices once the register call has returned. They must not be mutated
+// concurrently with the registration call itself, since copying reads them.
+//
+// Duplicate entries in From or To are ignored for matching purposes: the hook
+// fires once per matching transition regardless. GetHooks still reports the
+// patterns exactly as registered.
 type PostTransitionHookConfig struct {
 	Name   string
 	From   []string
