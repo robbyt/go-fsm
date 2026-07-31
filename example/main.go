@@ -54,7 +54,7 @@ func run(ctx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machi
 
 	// Create a channel to receive state change broadcasts
 	stateChan := make(chan string, 10)
-	err = machine.GetStateChan(ctx, stateChan)
+	err = machine.Subscribe(ctx, stateChan)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get state channel: %w", err)
 	}

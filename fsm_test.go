@@ -658,7 +658,7 @@ func TestFSM_TransitionWithContext(t *testing.T) {
 	})
 }
 
-func TestFSM_GetStateChan(t *testing.T) {
+func TestFSM_Subscribe(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Error: nil context", func(t *testing.T) {
@@ -671,7 +671,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 
 		c := make(chan string, 1)
 		//nolint:staticcheck // Intentionally testing nil context error
-		err = fsm.GetStateChan(nil, c)
+		err = fsm.Subscribe(nil, c)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "context cannot be nil")
 	})
@@ -686,9 +686,9 @@ func TestFSM_GetStateChan(t *testing.T) {
 
 		ctx := context.Background()
 		c := make(chan string, 1)
-		err = fsm.GetStateChan(ctx, c)
+		err = fsm.Subscribe(ctx, c)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "GetStateChan requires a callback registry")
+		assert.Contains(t, err.Error(), "Subscribe requires a callback registry")
 	})
 
 	t.Run("Error: callbacks not HookRegistrar", func(t *testing.T) {
@@ -702,7 +702,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 
 		ctx := context.Background()
 		c := make(chan string, 1)
-		err = fsm.GetStateChan(ctx, c)
+		err = fsm.Subscribe(ctx, c)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "requires a callback registry that supports dynamic hook registration")
 	})
@@ -721,7 +721,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 
 		ctx := context.Background()
 		c := make(chan string, 1)
-		err = fsm.GetStateChan(ctx, c)
+		err = fsm.Subscribe(ctx, c)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "wildcard")
 	})
@@ -748,7 +748,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 		ctx := t.Context()
 
 		c := make(chan string, 10)
-		err = fsm.GetStateChan(ctx, c)
+		err = fsm.Subscribe(ctx, c)
 		require.NoError(t, err)
 
 		// Should receive initial state immediately
@@ -791,12 +791,12 @@ func TestFSM_GetStateChan(t *testing.T) {
 
 		// Register first channel
 		c1 := make(chan string, 10)
-		err = fsm.GetStateChan(ctx, c1)
+		err = fsm.Subscribe(ctx, c1)
 		require.NoError(t, err)
 
 		// Register second channel
 		c2 := make(chan string, 10)
-		err = fsm.GetStateChan(ctx, c2)
+		err = fsm.Subscribe(ctx, c2)
 		require.NoError(t, err)
 
 		// Both should receive initial state
@@ -836,7 +836,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 		ctx := t.Context()
 
 		c := make(chan string, 10)
-		err = fsm.GetStateChan(ctx, c)
+		err = fsm.Subscribe(ctx, c)
 		require.NoError(t, err)
 
 		// Should work normally with custom timeout
@@ -870,7 +870,7 @@ func TestFSM_GetStateChan(t *testing.T) {
 			defer cancel()
 
 			c := make(chan string, 10)
-			err = fsm.GetStateChan(ctx, c)
+			err = fsm.Subscribe(ctx, c)
 			require.NoError(t, err)
 
 			// Receive states using select to avoid goroutine leak
@@ -896,13 +896,13 @@ func TestFSM_GetStateChan(t *testing.T) {
 	})
 }
 
-// TestGetStateChan_SharedRegistry verifies that two machines can share a single
-// hooks.Registry. Previously GetStateChan registered its broadcast hook under a
+// TestSubscribe_SharedRegistry verifies that two machines can share a single
+// hooks.Registry. Previously Subscribe registered its broadcast hook under a
 // constant name, so the second machine's registration failed with
 // ErrHookNameAlreadyExists and, because the error is cached in sync.Once, that
-// machine's GetStateChan failed permanently. With a per-machine hook name both
+// machine's Subscribe failed permanently. With a per-machine hook name both
 // machines can subscribe.
-func TestGetStateChan_SharedRegistry(t *testing.T) {
+func TestSubscribe_SharedRegistry(t *testing.T) {
 	t.Parallel()
 
 	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
@@ -918,23 +918,23 @@ func TestGetStateChan_SharedRegistry(t *testing.T) {
 
 	ch1 := make(chan string, 10)
 	ch2 := make(chan string, 10)
-	require.NoError(t, m1.GetStateChan(ctx, ch1))
-	require.NoError(t, m2.GetStateChan(ctx, ch2)) // previously failed permanently
+	require.NoError(t, m1.Subscribe(ctx, ch1))
+	require.NoError(t, m2.Subscribe(ctx, ch2)) // previously failed permanently
 
 	// Each subscriber receives its own machine's initial state.
 	assert.Equal(t, transitions.StatusNew, <-ch1)
 	assert.Equal(t, transitions.StatusNew, <-ch2)
 }
 
-// TestGetStateChan_InitialSendIsAtomic verifies that registering a subscriber
+// TestSubscribe_InitialSendIsAtomic verifies that registering a subscriber
 // and sending its initial state happen atomically with respect to transitions.
-// Before GetStateChan held the read lock across registration and the initial
+// Before Subscribe held the read lock across registration and the initial
 // send, a concurrent transition could broadcast between the two steps, so the
 // subscriber observed a duplicated or stale first value. With strictly
 // alternating Running<->Reloading transitions, the initial value (current
 // state) and the first broadcast that follows must always differ; an equal
 // pair signals the race.
-func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
+func TestSubscribe_InitialSendIsAtomic(t *testing.T) {
 	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
 	require.NoError(t, err)
 	machine, err := New(transitions.StatusRunning, transitions.Typical,
@@ -966,7 +966,7 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 	for i := range 500 {
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := make(chan string, 256)
-		require.NoError(t, machine.GetStateChan(ctx, ch))
+		require.NoError(t, machine.Subscribe(ctx, ch))
 
 		// Collect the initial value plus the first broadcast.
 		var got []string
@@ -987,11 +987,11 @@ func TestGetStateChan_InitialSendIsAtomic(t *testing.T) {
 	}
 }
 
-// TestGetStateChan_InitialSendRespectsContext verifies that the initial-state
+// TestSubscribe_InitialSendRespectsContext verifies that the initial-state
 // send honors the context: with an unbuffered channel and no reader the send
-// blocks, and a cancelled context makes GetStateChan return the context error
+// blocks, and a cancelled context makes Subscribe return the context error
 // instead of hanging while holding the FSM read lock.
-func TestGetStateChan_InitialSendRespectsContext(t *testing.T) {
+func TestSubscribe_InitialSendRespectsContext(t *testing.T) {
 	t.Parallel()
 
 	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
@@ -1003,9 +1003,35 @@ func TestGetStateChan_InitialSendRespectsContext(t *testing.T) {
 	cancel() // cancel up front so the blocked initial send aborts
 
 	ch := make(chan string) // unbuffered, no reader: the initial send blocks
-	err = machine.GetStateChan(ctx, ch)
+	err = machine.Subscribe(ctx, ch)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// TestGetStateChan_DeprecatedAliasDelegatesToSubscribe verifies that the
+// deprecated wrapper still works and behaves identically to Subscribe, so
+// callers on the old name keep working.
+func TestGetStateChan_DeprecatedAliasDelegatesToSubscribe(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	ch := make(chan string, 10)
+	require.NoError(t, machine.GetStateChan(t.Context(), ch))
+	assert.Equal(t, transitions.StatusNew, <-ch)
+
+	require.NoError(t, machine.Transition(transitions.StatusBooting))
+	require.Eventually(t, func() bool {
+		select {
+		case state := <-ch:
+			return assert.Equal(t, transitions.StatusBooting, state)
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "the deprecated alias should deliver transitions")
 }
 
 func TestFSM_IsTransitionAllowed(t *testing.T) {

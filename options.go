@@ -56,8 +56,8 @@ func WithLogHandler(handler slog.Handler) Option {
 	}
 }
 
-// WithBroadcastTimeout sets the default timeout for broadcast delivery when using GetStateChan.
-// This option only affects the built-in machine.GetStateChan() method. If you manually configure
+// WithBroadcastTimeout sets the default timeout for broadcast delivery when using Subscribe.
+// This option only affects the built-in machine.Subscribe() method. If you manually configure
 // a broadcast.Manager and hooks.Registry, configure the timeout via broadcast.WithTimeout()
 // when calling broadcastManager.GetStateChan() instead.
 //

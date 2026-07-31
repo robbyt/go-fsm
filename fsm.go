@@ -353,15 +353,15 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 	return nil
 }
 
-// GetStateChan registers a channel to receive state change notifications and sends
+// Subscribe registers a channel to receive state change notifications and sends
 // the current state immediately, blocking on sending the initial state if the channel buffer is full.
 // Use a buffered channel to avoid blocking.
 //
 // Subscriber registration and the initial-state send happen while holding the FSM read lock, so they
-// are atomic with respect to transitions. Two consequences follow: GetStateChan must NOT be called
+// are atomic with respect to transitions. Two consequences follow: Subscribe must NOT be called
 // from within a transition hook (the hook already holds the FSM write lock, so this would deadlock),
 // and a full or unbuffered channel blocks transitions until the initial send drains. The initial
-// send honors the provided context — if ctx is cancelled while it is blocked, GetStateChan returns
+// send honors the provided context — if ctx is cancelled while it is blocked, Subscribe returns
 // the context's error.
 //
 // This method requires the FSM to be configured with a hooks.Registry (via WithCallbackRegistry).
@@ -372,11 +372,11 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 // is cancelled, at which point it is automatically unsubscribed from receiving further broadcasts.
 // The channel is NOT closed; the caller maintains ownership and is responsible for channel lifecycle.
 //
-// GetStateChan can be called multiple times with different channels and contexts. All channels
+// Subscribe can be called multiple times with different channels and contexts. All channels
 // share the same broadcast manager, which is lazily initialized only once upon the first call.
 //
 // Each Machine registers its broadcast hook under a name unique to that Machine, so a single
-// hooks.Registry may be shared across Machines without GetStateChan failing. Note, however, that
+// hooks.Registry may be shared across Machines without Subscribe failing. Note, however, that
 // hooks registered on a shared registry fire for every Machine's transitions; prefer one registry
 // per Machine unless that shared behavior is intended.
 //
@@ -408,7 +408,7 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 //	defer cancel()
 //
 //	stateChan := make(chan string, 10)
-//	if err := machine.GetStateChan(ctx, stateChan); err != nil {
+//	if err := machine.Subscribe(ctx, stateChan); err != nil {
 //	    return err
 //	}
 //
@@ -422,18 +422,18 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 //	        }
 //	    }
 //	}()
-func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
+func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 	if ctx == nil {
 		return fmt.Errorf("context cannot be nil")
 	}
 
 	if fsm.callbacks == nil {
-		return fmt.Errorf("GetStateChan requires a callback registry")
+		return fmt.Errorf("Subscribe requires a callback registry")
 	}
 
 	registrar, ok := fsm.callbacks.(HookRegistrar)
 	if !ok {
-		return fmt.Errorf("GetStateChan requires a callback registry that supports dynamic hook registration")
+		return fmt.Errorf("Subscribe requires a callback registry that supports dynamic hook registration")
 	}
 
 	fsm.stateChanSetup.Do(func() {
@@ -442,9 +442,9 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 		// Use a per-machine hook name so multiple machines can share one
 		// registry. A constant name would collide on the second machine
 		// (ErrHookNameAlreadyExists), and because the error is cached in the
-		// sync.Once that machine's GetStateChan would then fail permanently.
+		// sync.Once that machine's Subscribe would then fail permanently.
 		fsm.stateChanSetupErr = registrar.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-			Name:   fmt.Sprintf("fsm.GetStateChan.%p", fsm),
+			Name:   fmt.Sprintf("fsm.Subscribe.%p", fsm),
 			From:   []string{"*"},
 			To:     []string{"*"},
 			Action: fsm.broadcastManager.BroadcastHook,
@@ -460,7 +460,7 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 	// hook runs inside transition()), so the read lock guarantees no transition
 	// can broadcast between registering the channel and sending the initial
 	// state. Without it, a concurrent transition could make the subscriber
-	// observe a duplicated or out-of-order first value. Concurrent GetStateChan
+	// observe a duplicated or out-of-order first value. Concurrent Subscribe
 	// callers still proceed in parallel under the shared read lock. (See the
 	// method doc for the blocking and hook-reentrancy implications.)
 	fsm.mutex.RLock()
@@ -486,4 +486,13 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 	}
 
 	return nil
+}
+
+// GetStateChan registers a channel to receive state change notifications.
+//
+// Deprecated: GetStateChan is the pre-v2.6 name of this method and is retained
+// for compatibility. Use [Machine.Subscribe], which has the same signature and
+// behaviour.
+func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
+	return fsm.Subscribe(ctx, c)
 }
