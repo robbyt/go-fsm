@@ -20,6 +20,8 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -595,5 +597,276 @@ func TestGetStateChan_NilCustomChannelIsManagerOwned(t *testing.T) {
 		assert.False(t, ok, "manager-owned channel should be closed after context cancellation")
 	case <-time.After(time.Second):
 		t.Fatal("channel was not closed after cancellation; nil custom channel was wrongly treated as external")
+	}
+}
+
+// TestGetStateChan_BackgroundContextSpawnsNoGoroutine verifies that subscribing
+// with a non-cancellable context does not start a per-subscriber cleanup
+// goroutine. Previously every GetStateChan spawned `go func(){ <-ctx.Done(); ...
+// }()`, which for context.Background() parked forever: the goroutine and its map
+// entry leaked for the life of the process.
+func TestGetStateChan_BackgroundContextSpawnsNoGoroutine(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		manager := broadcast.NewManager(newTestLogger().Handler())
+
+		for range 3 {
+			ch, err := manager.GetStateChan(context.Background(), broadcast.WithBufferSize(1))
+			require.NoError(t, err)
+			require.NotNil(t, ch)
+		}
+
+		// On the old code three goroutines are durably blocked on a nil Done()
+		// channel here, and the bubble fails with a deadlock.
+		synctest.Wait()
+
+		manager.UnsubscribeAll()
+	})
+}
+
+// TestUnsubscribeAll_EndsEverySubscriptionEvenWhenBroadcastIsBlocked verifies
+// that UnsubscribeAll releases a parked broadcast and clears every subscriber,
+// closing the manager-owned ones.
+func TestUnsubscribeAll_EndsEverySubscriptionEvenWhenBroadcastIsBlocked(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		manager := broadcast.NewManager(newTestLogger().Handler())
+
+		blocked := make(chan string, 1)
+		_, err := manager.GetStateChan(
+			context.Background(),
+			broadcast.WithCustomChannel(blocked),
+			broadcast.WithTimeout(-1),
+		)
+		require.NoError(t, err)
+
+		owned, err := manager.GetStateChan(context.Background(), broadcast.WithBufferSize(1))
+		require.NoError(t, err)
+
+		manager.Broadcast("first")
+
+		broadcastDone := false
+		go func() {
+			manager.Broadcast("second")
+			broadcastDone = true
+		}()
+
+		synctest.Wait()
+		require.False(t, broadcastDone, "broadcast should be parked on the full channel")
+
+		manager.UnsubscribeAll()
+
+		synctest.Wait()
+		assert.True(t, broadcastDone, "UnsubscribeAll should release the parked broadcast")
+
+		// Drain any buffered value, then confirm the manager-owned channel closed.
+		for range len(owned) {
+			<-owned
+		}
+		_, open := <-owned
+		assert.False(t, open, "manager-owned channel should be closed by UnsubscribeAll")
+
+		// The blocked subscriber was released, so its channel subscribes afresh
+		// rather than being rejected as a duplicate.
+		_, err = manager.GetStateChan(context.Background(), broadcast.WithCustomChannel(blocked))
+		require.NoError(t, err)
+	})
+}
+
+// TestGetStateChan_DuplicateChannelRejected verifies that a channel can hold
+// only one live subscription per manager. Subscribers are keyed by channel, so
+// a second registration used to silently overwrite the first's config and spawn
+// a second cleanup goroutine; cancelling the FIRST context then deleted the one
+// map entry and the second, still-live subscription stopped receiving with no
+// error.
+func TestGetStateChan_DuplicateChannelRejected(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+	ch := make(chan string, 10)
+
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	_, err := manager.GetStateChan(ctx1, broadcast.WithCustomChannel(ch))
+	require.NoError(t, err)
+
+	_, err = manager.GetStateChan(t.Context(), broadcast.WithCustomChannel(ch))
+	require.ErrorIs(t, err, broadcast.ErrChannelAlreadySubscribed)
+
+	// The rejected registration left the first subscription intact.
+	manager.Broadcast("StateA")
+	require.Eventually(t, func() bool {
+		select {
+		case state := <-ch:
+			return assert.Equal(t, "StateA", state)
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "the original subscription should still be live")
+
+	// Exactly one copy: a duplicate registration would have delivered twice.
+	require.Never(t, func() bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "state should be delivered exactly once")
+
+	cancel1()
+}
+
+// TestGetStateChan_ConcurrentDuplicateRegistrations verifies that the duplicate
+// check and the store are one atomic step: with N goroutines racing to subscribe
+// the same channel, exactly one must win.
+func TestGetStateChan_ConcurrentDuplicateRegistrations(t *testing.T) {
+	t.Parallel()
+
+	const racers = 8
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+	ch := make(chan string, racers)
+
+	var succeeded atomic.Int64
+	var wg sync.WaitGroup
+	for range racers {
+		wg.Go(func() {
+			if _, err := manager.GetStateChan(t.Context(), broadcast.WithCustomChannel(ch)); err == nil {
+				succeeded.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(1), succeeded.Load(), "exactly one concurrent registration should win")
+
+	// One subscription means one delivery.
+	manager.Broadcast("StateA")
+	require.Eventually(t, func() bool {
+		return len(ch) == 1
+	}, 100*time.Millisecond, 10*time.Millisecond, "expected exactly one delivery")
+}
+
+// TestGetStateChan_ResubscribeAfterCancelIsDeterministic verifies that a channel
+// whose subscription was just cancelled can be re-subscribed immediately, with
+// no wait for the teardown to finish. The take-over branch makes this
+// deterministic rather than a race between the new registration and the old
+// subscription's cleanup.
+func TestGetStateChan_ResubscribeAfterCancelIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+	ch := make(chan string, 10)
+
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	_, err := manager.GetStateChan(ctx1, broadcast.WithCustomChannel(ch))
+	require.NoError(t, err)
+
+	cancel1()
+
+	// Deliberately no Eventually: this must succeed on the first attempt, even
+	// while the cancelled subscription's teardown is still in flight.
+	_, err = manager.GetStateChan(t.Context(), broadcast.WithCustomChannel(ch))
+	require.NoError(t, err, "re-subscribing after cancellation must be allowed immediately")
+
+	manager.Broadcast("StateA")
+	require.Eventually(t, func() bool {
+		select {
+		case state := <-ch:
+			return assert.Equal(t, "StateA", state)
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "the new subscription should receive broadcasts")
+}
+
+// TestGetStateChan_CancelledContextRejected verifies that subscribing with an
+// already-cancelled context fails deterministically and leaves no phantom entry
+// behind.
+func TestGetStateChan_CancelledContextRejected(t *testing.T) {
+	t.Parallel()
+
+	manager := broadcast.NewManager(newTestLogger().Handler())
+	ch := make(chan string, 1)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	got, err := manager.GetStateChan(ctx, broadcast.WithCustomChannel(ch))
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, got)
+
+	// No phantom subscription was registered: the channel subscribes cleanly,
+	// which a lingering live entry would reject as a duplicate.
+	_, err = manager.GetStateChan(t.Context(), broadcast.WithCustomChannel(ch))
+	require.NoError(t, err)
+}
+
+// TestGetStateChan_CancelRacingRegistration exercises a cancellation landing
+// during registration: the subscription must end up either rejected or fully
+// registered, never wedged in between.
+//
+// This is a smoke test for the interleaving, not a proof. The specific hazard --
+// context.AfterFunc firing its callback on a fresh goroutine when the context is
+// already done, completing teardown before the store publishes the subscription
+// and so stranding a departed entry in the map forever -- depends on a window
+// too narrow to hit on demand. GetStateChan closes it by construction, by arming
+// AfterFunc and storing under the same acquisition of the manager mutex.
+func TestGetStateChan_CancelRacingRegistration(t *testing.T) {
+	t.Parallel()
+
+	for range 200 {
+		manager := broadcast.NewManager(newTestLogger().Handler())
+		ch := make(chan string, 1)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var wg sync.WaitGroup
+		wg.Go(cancel)
+		wg.Go(func() {
+			// Either outcome is legal: rejected as cancelled, or registered and
+			// then torn down. Neither may leave a live-looking zombie behind.
+			//nolint:errcheck // both outcomes are valid; the assertion is below
+			_, _ = manager.GetStateChan(ctx, broadcast.WithCustomChannel(ch))
+		})
+		wg.Wait()
+
+		// Whatever happened, the channel must be usable again.
+		require.Eventually(t, func() bool {
+			_, err := manager.GetStateChan(t.Context(), broadcast.WithCustomChannel(ch))
+			return err == nil
+		}, 100*time.Millisecond, time.Millisecond, "channel should be re-subscribable after the racing cancel")
+
+		manager.UnsubscribeAll()
+	}
+}
+
+// TestUnsubscribeAll_RacingNewRegistration verifies that UnsubscribeAll and a
+// concurrent registration cannot corrupt each other. A subscription that
+// completes registration before the second pass takes the mutex is released;
+// one that lands after it survives. Either way the manager stays consistent.
+func TestUnsubscribeAll_RacingNewRegistration(t *testing.T) {
+	t.Parallel()
+
+	for range 100 {
+		manager := broadcast.NewManager(newTestLogger().Handler())
+		ch := make(chan string, 1)
+
+		_, err := manager.GetStateChan(context.Background(), broadcast.WithBufferSize(1))
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		wg.Go(manager.UnsubscribeAll)
+		wg.Go(func() {
+			//nolint:errcheck // either side may win the race; the assertion is below
+			_, _ = manager.GetStateChan(context.Background(), broadcast.WithCustomChannel(ch))
+		})
+		wg.Wait()
+
+		// Broadcasting must not panic regardless of which side won.
+		assert.NotPanics(t, func() { manager.Broadcast("StateA") })
+		manager.UnsubscribeAll()
 	}
 }
