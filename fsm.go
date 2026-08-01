@@ -76,11 +76,27 @@ type Machine struct {
 	callbacks   CallbackExecutor
 	logger      *slog.Logger
 
-	broadcastManager  *broadcast.Manager
-	broadcastTimeout  time.Duration
-	stateChanSetup    sync.Once
-	stateChanSetupErr error
+	broadcastTimeout time.Duration
+
+	// id is a process-unique identifier assigned by New, used to build a
+	// collision-free name for this Machine's broadcast hook. A Machine built
+	// without New (the zero value) gets id 0, but such a Machine already fails
+	// on any transition, so it is not guarded here.
+	id uint64
+
+	// subMu gates the lazily-created broadcast plumbing below. It is separate
+	// from mutex on purpose: the setup it guards runs before Subscribe takes the
+	// FSM lock, and it is never held while mutex is acquired.
+	subMu            sync.Mutex
+	broadcastManager *broadcast.Manager
+	hookName         string
 }
+
+// machineIDCounter stamps each Machine with a process-unique id. A pointer
+// (%p) is not unique over time: a garbage-collected Machine's address can be
+// reused by a later allocation, and on a shared registry that produced a
+// spurious ErrHookNameAlreadyExists for the new Machine.
+var machineIDCounter atomic.Uint64
 
 // New creates a finite state machine with the specified initial state and transitions.
 // For simpler usage with inline maps, see NewSimple().
@@ -122,6 +138,7 @@ func New(
 		transitions:      trans,
 		logger:           slog.New(handler),
 		broadcastTimeout: 100 * time.Millisecond,
+		id:               machineIDCounter.Add(1),
 	}
 	m.state.Store(initialState)
 
@@ -457,23 +474,9 @@ func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 		)
 	}
 
-	fsm.stateChanSetup.Do(func() {
-		fsm.broadcastManager = broadcast.NewManager(fsm.logger.Handler())
-
-		// Use a per-machine hook name so multiple machines can share one
-		// registry. A constant name would collide on the second machine
-		// (ErrHookNameAlreadyExists), and because the error is cached in the
-		// sync.Once that machine's Subscribe would then fail permanently.
-		fsm.stateChanSetupErr = registrar.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-			Name:   fmt.Sprintf("fsm.Subscribe.%p", fsm),
-			From:   []string{"*"},
-			To:     []string{"*"},
-			Action: fsm.broadcastManager.BroadcastHook,
-		})
-	})
-
-	if fsm.stateChanSetupErr != nil {
-		return fsm.stateChanSetupErr
+	manager, err := fsm.ensureBroadcast(registrar)
+	if err != nil {
+		return err
 	}
 
 	// Register the subscriber and send the current state while holding the read
@@ -487,12 +490,11 @@ func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 	fsm.mutex.RLock()
 	defer fsm.mutex.RUnlock()
 
-	_, err := fsm.broadcastManager.GetStateChan(
+	if _, err := manager.GetStateChan(
 		ctx,
 		broadcast.WithCustomChannel(c),
 		broadcast.WithTimeout(fsm.broadcastTimeout),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("failed to register channel: %w", err)
 	}
 
@@ -516,4 +518,42 @@ func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 // behaviour.
 func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 	return fsm.Subscribe(ctx, c)
+}
+
+// ensureBroadcast lazily creates this Machine's broadcast manager and registers
+// its post-transition broadcast hook, returning the manager.
+//
+// It replaces a sync.Once, which cached a transient setup failure forever: a
+// Once cannot be undone, so one failed registration made every later Subscribe
+// on that Machine replay the same error with no way to recover. A failed setup
+// is no longer cached -- the next call retries.
+//
+// subMu is released before returning, so it is never held while acquiring
+// fsm.mutex and cannot deadlock against an in-flight transition.
+func (fsm *Machine) ensureBroadcast(registrar HookRegistrar) (*broadcast.Manager, error) {
+	fsm.subMu.Lock()
+	defer fsm.subMu.Unlock()
+
+	if fsm.broadcastManager != nil {
+		return fsm.broadcastManager, nil
+	}
+
+	manager := broadcast.NewManager(fsm.logger.Handler())
+
+	// Name the hook after this Machine's process-unique id so several Machines
+	// can share one registry without colliding.
+	name := fmt.Sprintf("fsm.Subscribe.%d", fsm.id)
+	if err := registrar.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
+		Name:   name,
+		From:   []string{"*"},
+		To:     []string{"*"},
+		Action: manager.BroadcastHook,
+	}); err != nil {
+		return nil, err
+	}
+
+	fsm.broadcastManager = manager
+	fsm.hookName = name
+
+	return manager, nil
 }

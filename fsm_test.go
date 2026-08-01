@@ -2,10 +2,12 @@ package fsm
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -1173,9 +1175,9 @@ func TestSubscribe_NilChannelRejected(t *testing.T) {
 }
 
 // TestSubscribe_InitialSendCancelledMidFlight covers the initial-send
-// cancellation path. Its sibling, TestSubscribe_InitialSendRespectsContext,
-// pre-cancels the context and so is now rejected by the broadcast manager before
-// the send is ever reached; this exercises a cancellation that lands while the
+// cancellation path. Its sibling, TestSubscribe_AlreadyCancelledContextRejected,
+// pre-cancels the context and so is rejected by the broadcast manager before the
+// send is ever reached; this exercises a cancellation that lands while the
 // send is genuinely blocked on a full channel.
 func TestSubscribe_InitialSendCancelledMidFlight(t *testing.T) {
 	t.Parallel()
@@ -1210,4 +1212,73 @@ func TestSubscribe_InitialSendCancelledMidFlight(t *testing.T) {
 		<-done
 		require.ErrorIs(t, subErr, context.Canceled)
 	})
+}
+
+// broadcastHookNames returns the names of the broadcast hooks Subscribe has
+// registered on reg, sorted.
+func broadcastHookNames(t *testing.T, reg *hooks.Registry) []string {
+	t.Helper()
+
+	var names []string
+	for _, info := range reg.GetHooks() {
+		if strings.HasPrefix(info.Name, "fsm.Subscribe.") {
+			names = append(names, info.Name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// TestSubscribe_HookNamesAreUniquePerMachine pins the broadcast hook naming
+// contract: each Machine uses its own process-unique id. The previous %p form
+// was not unique over time, because a garbage-collected Machine's address can be
+// reused by a later allocation sharing the same registry.
+func TestSubscribe_HookNamesAreUniquePerMachine(t *testing.T) {
+	t.Parallel()
+
+	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+
+	m1, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+	m2, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+	require.NoError(t, err)
+
+	mustSubscribe(t, m1, t.Context(), make(chan string, 1))
+	mustSubscribe(t, m2, t.Context(), make(chan string, 1))
+
+	names := broadcastHookNames(t, reg)
+	require.Len(t, names, 2)
+	assert.NotEqual(t, names[0], names[1])
+	assert.NotEqual(t, m1.hookName, m2.hookName)
+	assert.Equal(t, fmt.Sprintf("fsm.Subscribe.%d", m1.id), m1.hookName)
+}
+
+// TestSubscribe_RetriesAfterFailedSetup verifies that a failed hook
+// registration is no longer cached permanently. The sync.Once this replaced
+// stored the error forever, so one transient failure poisoned the machine.
+func TestSubscribe_RetriesAfterFailedSetup(t *testing.T) {
+	t.Parallel()
+
+	// A registry without WithTransitions cannot accept the wildcard broadcast hook.
+	badReg, err := hooks.NewRegistry()
+	require.NoError(t, err)
+	machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(badReg))
+	require.NoError(t, err)
+
+	err1 := machine.Subscribe(t.Context(), make(chan string, 1))
+	require.Error(t, err1)
+	assert.Contains(t, err1.Error(), "wildcard")
+
+	// The second attempt genuinely retries rather than replaying a cached error.
+	err2 := machine.Subscribe(t.Context(), make(chan string, 1))
+	require.Error(t, err2)
+	assert.Equal(t, err1.Error(), err2.Error())
+
+	// A machine with a good registry is unaffected.
+	goodReg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+	require.NoError(t, err)
+	good, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(goodReg))
+	require.NoError(t, err)
+	mustSubscribe(t, good, t.Context(), make(chan string, 1))
 }
