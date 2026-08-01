@@ -3,8 +3,13 @@ name: Go
 on:
   push:
     branches: ["main"]
+  # Deliberately unfiltered: run on pull requests targeting ANY base branch, not
+  # just main. A stacked pull request targets its predecessor rather than main,
+  # so a "branches: [main]" filter skipped it entirely — and GitHub reports "no
+  # checks reported", which reads as green when it actually means unverified.
+  # Pushes stay filtered to main so branch pushes are covered once, by the
+  # pull_request event, rather than running twice.
   pull_request:
-    branches: ["main"]
 
 permissions:
   contents: read
