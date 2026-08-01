@@ -114,6 +114,14 @@ func (m *mockCallbackExecutor) getReceivedContexts() []context.Context {
 	return append([]context.Context(nil), m.receivedContexts...)
 }
 
+// mustSubscribe registers ch on m and fails the test immediately if
+// registration errors. The subscription ends when ctx is cancelled.
+func mustSubscribe(t *testing.T, m *Machine, ctx context.Context, ch chan string) {
+	t.Helper()
+
+	require.NoError(t, m.Subscribe(ctx, ch))
+}
+
 // Unit tests with mocked dependencies
 func TestFSM_New_Validation(t *testing.T) {
 	t.Parallel()
@@ -673,6 +681,7 @@ func TestFSM_Subscribe(t *testing.T) {
 		//nolint:staticcheck // Intentionally testing nil context error
 		err = fsm.Subscribe(nil, c)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 		assert.Contains(t, err.Error(), "context cannot be nil")
 	})
 
@@ -1098,5 +1107,43 @@ func TestFSM_IsTerminal(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.False(t, machine.IsTerminal(), "Unknown self-loops, so it is not terminal")
+	})
+}
+
+// TestSubscribe_NilChannelRejected verifies that Subscribe returns an error for
+// a nil channel before it registers anything. Previously Subscribe did not check
+// if the channel argument was nil, and sent the initial state on it. A send on a
+// nil channel blocks forever, and Subscribe holds the FSM read lock during that
+// send, so with a non-cancellable context every later Transition, SetState, and
+// MarshalJSON call on the machine blocked permanently.
+func TestSubscribe_NilChannelRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Returns ErrInvalidConfiguration and leaves the machine usable", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+			require.NoError(t, err)
+			machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+			require.NoError(t, err)
+
+			// context.Background() is deliberate: on the old code this call blocks
+			// forever on the nil-channel send, which the bubble reports as a deadlock.
+			err = machine.Subscribe(context.Background(), nil)
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrInvalidConfiguration)
+			require.ErrorContains(t, err, "state channel cannot be nil")
+
+			// The rejection happens before setup, so no broadcast hook was registered.
+			assert.Empty(t, reg.GetHooks())
+
+			// The read lock was never taken: transitions still work.
+			require.NoError(t, machine.Transition(transitions.StatusBooting))
+			assert.Equal(t, transitions.StatusBooting, machine.GetState())
+
+			// Setup was not consumed: a later valid subscription still succeeds.
+			ch := make(chan string, 1)
+			mustSubscribe(t, machine, t.Context(), ch)
+			assert.Equal(t, transitions.StatusBooting, <-ch)
+		})
 	})
 }
