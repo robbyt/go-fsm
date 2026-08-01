@@ -114,6 +114,15 @@ func (m *mockCallbackExecutor) getReceivedContexts() []context.Context {
 	return append([]context.Context(nil), m.receivedContexts...)
 }
 
+// mustSubscribe registers ch on m and fails the test if registration errors.
+// It returns the unsubscribe handle, which most callers ignore because the test
+// context ends the subscription.
+func mustSubscribe(t *testing.T, m *Machine, ctx context.Context, ch chan string) {
+	t.Helper()
+
+	require.NoError(t, m.Subscribe(ctx, ch))
+}
+
 // Unit tests with mocked dependencies
 func TestFSM_New_Validation(t *testing.T) {
 	t.Parallel()
@@ -673,6 +682,7 @@ func TestFSM_Subscribe(t *testing.T) {
 		//nolint:staticcheck // Intentionally testing nil context error
 		err = fsm.Subscribe(nil, c)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 		assert.Contains(t, err.Error(), "context cannot be nil")
 	})
 
@@ -688,6 +698,7 @@ func TestFSM_Subscribe(t *testing.T) {
 		c := make(chan string, 1)
 		err = fsm.Subscribe(ctx, c)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 		assert.Contains(t, err.Error(), "Subscribe requires a callback registry")
 	})
 
@@ -704,6 +715,7 @@ func TestFSM_Subscribe(t *testing.T) {
 		c := make(chan string, 1)
 		err = fsm.Subscribe(ctx, c)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
 		assert.Contains(t, err.Error(), "requires a callback registry that supports dynamic hook registration")
 	})
 
@@ -987,11 +999,17 @@ func TestSubscribe_InitialSendIsAtomic(t *testing.T) {
 	}
 }
 
-// TestSubscribe_InitialSendRespectsContext verifies that the initial-state
-// send honors the context: with an unbuffered channel and no reader the send
-// blocks, and a cancelled context makes Subscribe return the context error
-// instead of hanging while holding the FSM read lock.
-func TestSubscribe_InitialSendRespectsContext(t *testing.T) {
+// TestSubscribe_AlreadyCancelledContextRejected verifies that subscribing with
+// an already-cancelled context is rejected, deterministically, before anything
+// is registered.
+//
+// This test previously claimed to cover the initial-state send aborting on
+// cancellation, but once Subscribe began rejecting already-cancelled contexts up
+// front it never reached that send -- it passed for the wrong reason, because
+// the rejection error also wraps context.Canceled. The genuine mid-flight case
+// is covered by TestSubscribe_InitialSendCancelledMidFlight; this one now
+// asserts the behaviour it actually exercises.
+func TestSubscribe_AlreadyCancelledContextRejected(t *testing.T) {
 	t.Parallel()
 
 	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
@@ -1000,12 +1018,15 @@ func TestSubscribe_InitialSendRespectsContext(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel up front so the blocked initial send aborts
+	cancel()
 
-	ch := make(chan string) // unbuffered, no reader: the initial send blocks
+	ch := make(chan string, 1)
 	err = machine.Subscribe(ctx, ch)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, context.Canceled)
+
+	// Rejected before registration: the channel is free to subscribe under a
+	// live context, which a lingering entry would refuse as a duplicate.
+	require.NoError(t, machine.Subscribe(t.Context(), ch))
 }
 
 // TestGetStateChan_DeprecatedAliasDelegatesToSubscribe verifies that the
@@ -1098,5 +1119,95 @@ func TestFSM_IsTerminal(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.False(t, machine.IsTerminal(), "Unknown self-loops, so it is not terminal")
+	})
+}
+
+// TestSubscribe_NilChannelRejected verifies that a nil channel is rejected
+// before any state is touched. Previously the nil channel fell through to the
+// initial-state send, which blocks forever on a nil channel while holding the
+// FSM read lock; with a non-cancellable context that permanently wedged every
+// Transition, SetState, and MarshalJSON call on the machine.
+func TestSubscribe_NilChannelRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Returns ErrInvalidConfiguration and leaves the machine usable", func(t *testing.T) {
+		reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+		require.NoError(t, err)
+		machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+		require.NoError(t, err)
+
+		err = machine.Subscribe(context.Background(), nil)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidConfiguration)
+		require.ErrorContains(t, err, "state channel cannot be nil")
+
+		// The rejection happens before setup, so no broadcast hook was registered.
+		assert.Empty(t, reg.GetHooks())
+
+		// The read lock was never taken: transitions still work.
+		require.NoError(t, machine.Transition(transitions.StatusBooting))
+		assert.Equal(t, transitions.StatusBooting, machine.GetState())
+
+		// Setup was not consumed: a later valid subscription still succeeds.
+		ch := make(chan string, 1)
+		mustSubscribe(t, machine, t.Context(), ch)
+		assert.Equal(t, transitions.StatusBooting, <-ch)
+	})
+
+	t.Run("Spawns no goroutine and registers no subscriber", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+			require.NoError(t, err)
+			machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+			require.NoError(t, err)
+
+			// context.Background() is deliberate: on the old code both this call
+			// and the manager's cleanup goroutine block on it forever, which the
+			// bubble reports as a deadlock.
+			require.ErrorIs(t, machine.Subscribe(context.Background(), nil), ErrInvalidConfiguration)
+			synctest.Wait()
+
+			require.NoError(t, machine.Transition(transitions.StatusBooting))
+		})
+	})
+}
+
+// TestSubscribe_InitialSendCancelledMidFlight covers the initial-send
+// cancellation path. Its sibling, TestSubscribe_InitialSendRespectsContext,
+// pre-cancels the context and so is now rejected by the broadcast manager before
+// the send is ever reached; this exercises a cancellation that lands while the
+// send is genuinely blocked on a full channel.
+func TestSubscribe_InitialSendCancelledMidFlight(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
+		require.NoError(t, err)
+		machine, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		ch := make(chan string) // unbuffered, no reader: the initial send blocks
+
+		var subErr error
+		done := make(chan struct{})
+		go func() {
+			subErr = machine.Subscribe(ctx, ch)
+			close(done)
+		}()
+
+		// Let the subscription reach the blocked send before cancelling.
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("Subscribe returned before the initial send could block")
+		default:
+		}
+
+		cancel()
+		synctest.Wait()
+
+		<-done
+		require.ErrorIs(t, subErr, context.Canceled)
 	})
 }

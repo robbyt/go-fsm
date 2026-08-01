@@ -158,6 +158,17 @@ func (t *Config) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements json.Unmarshaler interface.
 // It deserializes the config map and rebuilds the internal index.
+//
+// This is the one operation that mutates a Config in place, so it must only be
+// called on a Config that has not yet been shared: not attached to an fsm.Machine
+// and not reachable from another goroutine. Every other method treats a Config as
+// immutable after construction, and fsm.Machine relies on that to read its
+// transition table without holding a lock (see the transitionDB contract in
+// fsm.go). Unmarshaling into a Config that is already in use is a data race and
+// can swap the transition table under a running machine non-atomically.
+//
+// To load transitions into a machine that already exists, unmarshal into a fresh
+// Config and build a new Machine from it.
 func (t *Config) UnmarshalJSON(data []byte) error {
 	var config map[string][]string
 	if err := json.Unmarshal(data, &config); err != nil {
