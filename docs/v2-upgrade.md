@@ -167,6 +167,16 @@ machine, err := fsm.New(
 
 ### Step 7: Migrate GetStateChan Usage (Critical)
 
+> **New in v2.6:** `machine.GetStateChan` is renamed to `machine.Subscribe`
+> (same signature; the old name is retained as a deprecated wrapper for
+> compatibility). `machine.Close()` releases every subscriber
+> and removes the machine's broadcast hook from the registry — call it when
+> discarding a machine whose `hooks.Registry` outlives it. Three other behaviours
+> tightened in the same release: subscribing the same channel twice on one
+> machine, subscribing with an already-cancelled context, and passing a nil
+> channel now return errors instead of racing or deadlocking the machine.
+
+
 This changed significantly in v2. The v2 API provides a built-in helper method on the FSM.
 
 #### Decision Guide: Which Broadcasting Pattern Should You Use?
@@ -569,8 +579,9 @@ Use this checklist to verify your migration:
 - [ ] Replaced `fsm.StatusX` with `transitions.StatusX`
 - [ ] Replaced `fsm.TypicalTransitions` with `transitions.Typical`
 - [ ] Updated `fsm.New()` constructor calls (moved handler to options)
-- [ ] Migrated `GetStateChan()` to `machine.Subscribe(ctx, chan)` with hooks.Registry
+- [ ] Migrated `GetStateChan()` to `machine.Subscribe(ctx, chan)` with hooks.Registry (v2.6+; the old name remains as a deprecated wrapper)
 - [ ] Added `WithBroadcastTimeout()` option if custom timeout needed (replaces `WithSyncTimeout`)
+- [ ] Called `machine.Close()` for machines sharing a long-lived `hooks.Registry` (v2.6+)
 - [ ] **Created single abstraction constructor (if architecture supports it)**
 - [ ] Updated all tests
 - [ ] Verified with `go build ./...`

@@ -35,3 +35,7 @@ var ErrEmptyTransitions = errors.New("transitions cannot be empty")
 
 // ErrInvalidJSONTransitions is returned when JSON transitions configuration is invalid
 var ErrInvalidJSONTransitions = errors.New("invalid transitions in JSON")
+
+// ErrMachineClosed is returned when Subscribe is called on a Machine whose
+// broadcast plumbing has been released by Close
+var ErrMachineClosed = errors.New("machine is closed")
