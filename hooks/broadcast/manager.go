@@ -38,6 +38,19 @@ type subscription struct {
 	// is abandoned instead of holding the manager mutex forever. It is nil for a
 	// non-cancellable context, and a nil channel is never ready.
 	ctxDone <-chan struct{}
+
+	// departed is closed exactly once when this subscription ends, by either
+	// context cancellation or an explicit unsubscribe. Broadcast selects on it
+	// alongside ctxDone so an explicit unsubscribe can release a parked send.
+	departed   chan struct{}
+	signalOnce sync.Once
+
+	// stopAfterFunc releases this subscription's context.AfterFunc association.
+	// It is assigned under Manager.mu before the subscription is published, and
+	// is only ever read by UnsubscribeAll, which reaches the subscription through
+	// the map and so observes the write. depart must never call it: on the
+	// context path depart IS the callback.
+	stopAfterFunc func() bool
 }
 
 // key returns the map key for this subscription. Subscribers are keyed by the
@@ -47,11 +60,34 @@ func (s *subscription) key() <-chan string {
 	return s.ch
 }
 
+// signalDepart marks this subscription as ended, releasing any broadcast
+// currently parked on a blocking send to it. Safe to call repeatedly and from
+// any goroutine; it deliberately takes no lock, because callers must be able to
+// signal before contending for the manager mutex.
+func (s *subscription) signalDepart() {
+	s.signalOnce.Do(func() { close(s.departed) })
+}
+
 // Manager handles state change notifications to subscribers.
 type Manager struct {
-	mu          sync.Mutex
+	mu sync.Mutex
+
+	// subscribers maps <-chan string to *subscription.
+	//
+	// The locking discipline here is deliberately path-dependent, and a future
+	// change to a plain map must preserve both halves:
+	//
+	//   - GetStateChan arms context cleanup and stores under mu, because the pair
+	//     has to be atomic (see GetStateChan).
+	//   - UnsubscribeAll's first pass reads WITHOUT mu, because it must signal
+	//     departure before contending for a mutex that a broadcast parked on a
+	//     blocking send is holding.
+	//
+	// A plain map would therefore need its own second mutex for the unlocked
+	// reads; reusing mu for them reintroduces the deadlock.
 	subscribers sync.Map
-	logger      *slog.Logger
+
+	logger *slog.Logger
 }
 
 // NewManager creates a new broadcast manager.
@@ -64,10 +100,20 @@ func NewManager(handler slog.Handler) *Manager {
 	}
 }
 
-// GetStateChan returns a channel that receives state change notifications.
-// The channel is automatically closed when ctx is cancelled.
+// GetStateChan registers for state change notifications and returns the channel
+// they will be delivered on.
 // Use functional options to customize buffer size, timeout behavior, or provide a custom channel.
 // Returns an error if ctx is nil.
+//
+// Cancelling ctx ends the subscription; UnsubscribeAll ends every subscription
+// at once. A manager-owned channel is closed when the subscription ends; a
+// channel supplied via WithCustomChannel belongs to its caller, who is
+// responsible for closing it and must not do so while it is still subscribed.
+//
+// Passing a non-cancellable context (context.Background()) is supported and
+// costs nothing, but leaves UnsubscribeAll as the only way to end the
+// subscription, so a subscriber that is simply dropped stays registered for the
+// lifetime of the manager. Prefer a cancellable context.
 func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan string, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("context cannot be nil")
@@ -83,6 +129,7 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 		timeout:         config.timeout,
 		externalChannel: config.externalChannel,
 		ctxDone:         ctx.Done(),
+		departed:        make(chan struct{}),
 	}
 
 	if config.channel != nil {
@@ -95,21 +142,64 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 		sub.externalChannel = false
 	}
 
-	// Register subscriber
+	// Register the subscriber and arm context cleanup as one critical section.
+	//
+	// context.AfterFunc runs its callback immediately, on a fresh goroutine, when
+	// the context is already cancelled -- so arming it outside the lock would let
+	// that callback finish departing before the Store below published the
+	// subscription, leaving a departed (and possibly closed) entry in the map.
+	// Holding m.mu across arm-and-store closes that window: depart signals
+	// without a lock but cannot reach its removal until we release, at which
+	// point it correctly removes what we just stored.
+	//
+	// AfterFunc also replaces a `go func() { <-ctx.Done(); ... }()` cleanup
+	// goroutine. For a non-cancellable context (context.Background()) it
+	// registers nothing and starts nothing, so such a subscriber no longer leaks
+	// a parked goroutine; it lives until UnsubscribeAll.
 	m.mu.Lock()
+	sub.stopAfterFunc = context.AfterFunc(ctx, func() { m.depart(sub) })
 	m.subscribers.Store(sub.key(), sub)
 	m.mu.Unlock()
 
-	// Handle cleanup when context is cancelled
-	go func() {
-		<-ctx.Done()
-		m.depart(sub)
-		if !sub.externalChannel {
+	return sub.ch, nil
+}
+
+// UnsubscribeAll ends every current subscription. It is used to release all
+// subscribers at once when tearing down whatever owns this manager.
+//
+// Unlike a context cancellation, UnsubscribeAll cannot be delayed by the broadcast it is
+// trying to release: it signals every subscription it can see before acquiring
+// the manager mutex, so any parked send has already been given its exit.
+//
+// A subscription created concurrently with UnsubscribeAll is included if and
+// only if it completed registration before the second pass acquired the mutex.
+func (m *Manager) UnsubscribeAll() {
+	// Phase 1: signal without the mutex, freeing any parked broadcast so that
+	// phase 2 can acquire m.mu.
+	seen := make(map[*subscription]struct{})
+	for sub := range m.iterSubscribers() {
+		sub.signalDepart()
+		seen[sub] = struct{}{}
+	}
+
+	// Phase 2: under the mutex, remove everything still registered. Ranging
+	// again picks up any subscription that won the mutex ahead of us.
+	m.mu.Lock()
+	for sub := range m.iterSubscribers() {
+		sub.signalDepart()
+		seen[sub] = struct{}{}
+		if _, loaded := m.subscribers.LoadAndDelete(sub.key()); loaded && !sub.externalChannel {
 			close(sub.ch)
 		}
-	}()
+	}
+	m.mu.Unlock()
 
-	return sub.ch, nil
+	// Phase 3: release the context associations for everything either pass saw,
+	// so a later cancellation neither runs depart nor keeps the subscription
+	// reachable from its context.
+	for sub := range seen {
+		sub.stopAfterFunc()
+	}
 }
 
 // Broadcast sends the state to all subscriber channels.
@@ -131,12 +221,14 @@ func (m *Manager) Broadcast(state string) {
 
 	for sub := range m.iterSubscribers() {
 		ch := sub.ch
-		// ctxDone is the subscriber's context cancellation signal. Selecting on
-		// it in the blocking branches ensures a subscriber that has gone away
-		// (its context was cancelled) cannot block the broadcast indefinitely
-		// while the manager mutex is held, which would otherwise deadlock
-		// departure and every future Broadcast.
+		// departed and ctxDone are the subscriber's departure signals. Selecting
+		// on them in the blocking branches ensures a subscriber that has gone
+		// away -- its context was cancelled, or it was explicitly unsubscribed --
+		// cannot block the broadcast indefinitely while the manager mutex is
+		// held, which would otherwise deadlock departure and every future
+		// Broadcast.
 		done := sub.ctxDone
+		departed := sub.departed
 		if sub.timeout < 0 {
 			// Negative timeout: block until delivered or the subscriber departs
 			// (guaranteed delivery for live subscribers).
@@ -146,6 +238,8 @@ func (m *Manager) Broadcast(state string) {
 					logger.Debug("State delivered to guaranteed delivery subscriber")
 				case <-done:
 					logger.Debug("Guaranteed-delivery subscriber departed before delivery; aborting send")
+				case <-departed:
+					logger.Debug("Guaranteed-delivery subscriber unsubscribed before delivery; aborting send")
 				}
 			})
 		} else if sub.timeout > 0 {
@@ -157,6 +251,8 @@ func (m *Manager) Broadcast(state string) {
 					logger.Debug("State delivered to timeout subscriber")
 				case <-done:
 					logger.Debug("Timeout subscriber departed before delivery; aborting send")
+				case <-departed:
+					logger.Debug("Timeout subscriber unsubscribed before delivery; aborting send")
 				case <-time.After(timeout):
 					logger.Warn("Timeout subscriber blocked; state delivery timed out",
 						"timeout", timeout,
@@ -187,11 +283,32 @@ func (m *Manager) BroadcastHook(_ context.Context, _, to string) {
 	m.Broadcast(to)
 }
 
-// depart removes a subscription from receiving broadcasts.
+// depart ends a subscription: it releases any in-flight blocking send to it,
+// removes it from the subscriber set, and closes the channel when the manager
+// owns it. Idempotent and safe to call from any goroutine.
+//
+// The ordering is load-bearing. departed is closed BEFORE m.mu is acquired:
+// Broadcast holds m.mu for the whole broadcast and may be parked in a blocking
+// send to this subscriber, so signalling first lets that send abort and the
+// mutex drop. Acquiring m.mu afterwards is what makes removal synchronous --
+// once depart returns, no broadcast is sending on this channel.
 func (m *Manager) depart(sub *subscription) {
+	sub.signalDepart()
+
 	m.mu.Lock()
-	m.subscribers.Delete(sub.key())
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+
+	// LoadAndDelete rather than a bare Delete so that the removal reports
+	// whether it was this call that took the entry out. depart and
+	// UnsubscribeAll can both target the same subscription -- a context
+	// cancelled while UnsubscribeAll is running, say -- and both close
+	// manager-owned channels; the mutex serialises them, and only the one that
+	// actually removed the entry closes.
+	if _, loaded := m.subscribers.LoadAndDelete(sub.key()); loaded && !sub.externalChannel {
+		// Closing under m.mu is the send/close barrier: broadcasts hold the same
+		// mutex and wait for their send goroutines, so none is in flight here.
+		close(sub.ch)
+	}
 }
 
 // iterSubscribers returns a sequence of all current subscriptions.

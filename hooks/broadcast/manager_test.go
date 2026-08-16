@@ -597,3 +597,103 @@ func TestGetStateChan_NilCustomChannelIsManagerOwned(t *testing.T) {
 		t.Fatal("channel was not closed after cancellation; nil custom channel was wrongly treated as external")
 	}
 }
+
+// TestGetStateChan_BackgroundContextSpawnsNoGoroutine verifies that subscribing
+// with a non-cancellable context does not start a per-subscriber cleanup
+// goroutine. Previously every GetStateChan spawned `go func(){ <-ctx.Done(); ...
+// }()`, which for context.Background() parked forever: the goroutine and its map
+// entry leaked for the life of the process.
+func TestGetStateChan_BackgroundContextSpawnsNoGoroutine(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		manager := broadcast.NewManager(newTestLogger().Handler())
+
+		for range 3 {
+			ch, err := manager.GetStateChan(context.Background(), broadcast.WithBufferSize(1))
+			require.NoError(t, err)
+			require.NotNil(t, ch)
+		}
+
+		// On the old code three goroutines are durably blocked on a nil Done()
+		// channel here, and the bubble fails with a deadlock.
+		synctest.Wait()
+
+		manager.UnsubscribeAll()
+	})
+}
+
+// TestUnsubscribeAll_EndsEverySubscriptionEvenWhenBroadcastIsBlocked verifies
+// that UnsubscribeAll releases a parked broadcast and clears every subscriber,
+// closing the manager-owned ones.
+//
+// Parameterised over both blocking delivery modes deliberately. Guaranteed
+// delivery (-1) exercises the path that has always selected on departure; a
+// positive timeout exercises the branch that did not, where UnsubscribeAll
+// could only proceed once the timeout elapsed -- so tearing down a manager
+// blocked for up to the broadcast timeout despite documenting otherwise.
+func TestUnsubscribeAll_EndsEverySubscriptionEvenWhenBroadcastIsBlocked(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{name: "Guaranteed delivery", timeout: -1},
+		{name: "Long positive timeout", timeout: time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				manager := broadcast.NewManager(newTestLogger().Handler())
+
+				blocked := make(chan string, 1)
+				_, err := manager.GetStateChan(
+					context.Background(),
+					broadcast.WithCustomChannel(blocked),
+					broadcast.WithTimeout(tc.timeout),
+				)
+				require.NoError(t, err)
+
+				owned, err := manager.GetStateChan(context.Background(), broadcast.WithBufferSize(1))
+				require.NoError(t, err)
+
+				manager.Broadcast("first")
+
+				broadcastDone := false
+				go func() {
+					manager.Broadcast("second")
+					broadcastDone = true
+				}()
+
+				synctest.Wait()
+				require.False(t, broadcastDone, "broadcast should be parked on the full channel")
+
+				manager.UnsubscribeAll()
+
+				// synctest.Wait returns once every goroutine is durably blocked.
+				// With the fake clock this cannot be satisfied by the timeout
+				// elapsing, so a pass here means departure released the send.
+				synctest.Wait()
+				assert.True(t, broadcastDone, "UnsubscribeAll should release the parked broadcast")
+
+				// Drain any buffered value, then confirm the manager-owned channel closed.
+				for range len(owned) {
+					<-owned
+				}
+				_, open := <-owned
+				assert.False(t, open, "manager-owned channel should be closed by UnsubscribeAll")
+
+				// The caller owns the custom channel, so UnsubscribeAll must leave
+				// it open -- and unsubscribed, so nothing else is delivered to it.
+				require.Len(t, blocked, 1, "the value delivered before the park should still be buffered")
+				assert.Equal(t, "first", <-blocked)
+
+				manager.Broadcast("third")
+				synctest.Wait()
+				assert.Empty(t, blocked, "an unsubscribed channel should receive no further broadcasts")
+
+				close(blocked)
+			})
+		})
+	}
+}
