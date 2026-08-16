@@ -25,6 +25,28 @@ import (
 	"time"
 )
 
+// subscription is the manager's per-subscriber bookkeeping, built in
+// GetStateChan once the options have been applied. Config remains purely the
+// option target; everything the manager needs at runtime lives here.
+type subscription struct {
+	ch              chan string
+	timeout         time.Duration
+	externalChannel bool
+
+	// ctxDone is the subscriber's context cancellation signal. Broadcast selects
+	// on it so a blocking send to a subscriber whose context has been cancelled
+	// is abandoned instead of holding the manager mutex forever. It is nil for a
+	// non-cancellable context, and a nil channel is never ready.
+	ctxDone <-chan struct{}
+}
+
+// key returns the map key for this subscription. Subscribers are keyed by the
+// receive side of the channel, which is the form GetStateChan returns and the
+// form a duplicate-registration check needs to compare against.
+func (s *subscription) key() <-chan string {
+	return s.ch
+}
+
 // Manager handles state change notifications to subscribers.
 type Manager struct {
 	mu          sync.Mutex
@@ -57,36 +79,37 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 		opt(config)
 	}
 
-	// Record the subscriber's cancellation signal so Broadcast can abandon a
-	// blocking send once this subscriber's context is cancelled.
-	config.done = ctx.Done()
+	sub := &subscription{
+		timeout:         config.timeout,
+		externalChannel: config.externalChannel,
+		ctxDone:         ctx.Done(),
+	}
 
-	var ch chan string
 	if config.channel != nil {
-		ch = config.channel
+		sub.ch = config.channel
 	} else {
 		// Fall back to a manager-owned channel. Reset externalChannel in case a
 		// caller passed WithCustomChannel(nil), which would otherwise leave it
-		// true and prevent the cleanup goroutine from closing this channel.
-		ch = make(chan string, 1)
-		config.externalChannel = false
+		// true and prevent cleanup from closing this channel.
+		sub.ch = make(chan string, 1)
+		sub.externalChannel = false
 	}
 
 	// Register subscriber
 	m.mu.Lock()
-	m.subscribers.Store(ch, config)
+	m.subscribers.Store(sub.key(), sub)
 	m.mu.Unlock()
 
 	// Handle cleanup when context is cancelled
 	go func() {
 		<-ctx.Done()
-		m.unsubscribe(ch)
-		if !config.externalChannel {
-			close(ch)
+		m.depart(sub)
+		if !sub.externalChannel {
+			close(sub.ch)
 		}
 	}()
 
-	return ch, nil
+	return sub.ch, nil
 }
 
 // Broadcast sends the state to all subscriber channels.
@@ -106,14 +129,15 @@ func (m *Manager) Broadcast(state string) {
 
 	var wg sync.WaitGroup
 
-	for ch, config := range m.iterSubscribers() {
-		// done is the subscriber's context cancellation signal. Selecting on it
-		// in the blocking branches ensures a subscriber that has gone away (its
-		// context was cancelled) cannot block the broadcast indefinitely while
-		// the manager mutex is held, which would otherwise deadlock unsubscribe
-		// and every future Broadcast.
-		done := config.done
-		if config.timeout < 0 {
+	for sub := range m.iterSubscribers() {
+		ch := sub.ch
+		// ctxDone is the subscriber's context cancellation signal. Selecting on
+		// it in the blocking branches ensures a subscriber that has gone away
+		// (its context was cancelled) cannot block the broadcast indefinitely
+		// while the manager mutex is held, which would otherwise deadlock
+		// departure and every future Broadcast.
+		done := sub.ctxDone
+		if sub.timeout < 0 {
 			// Negative timeout: block until delivered or the subscriber departs
 			// (guaranteed delivery for live subscribers).
 			wg.Go(func() {
@@ -124,9 +148,9 @@ func (m *Manager) Broadcast(state string) {
 					logger.Debug("Guaranteed-delivery subscriber departed before delivery; aborting send")
 				}
 			})
-		} else if config.timeout > 0 {
+		} else if sub.timeout > 0 {
 			// Positive timeout: block up to timeout duration
-			timeout := config.timeout
+			timeout := sub.timeout
 			wg.Go(func() {
 				select {
 				case ch <- state:
@@ -163,29 +187,24 @@ func (m *Manager) BroadcastHook(_ context.Context, _, to string) {
 	m.Broadcast(to)
 }
 
-// unsubscribe removes a channel from receiving broadcasts.
-func (m *Manager) unsubscribe(ch chan string) {
+// depart removes a subscription from receiving broadcasts.
+func (m *Manager) depart(sub *subscription) {
 	m.mu.Lock()
-	m.subscribers.Delete(ch)
+	m.subscribers.Delete(sub.key())
 	m.mu.Unlock()
 }
 
-// iterSubscribers returns a sequence of all subscriber channels and their configs.
-func (m *Manager) iterSubscribers() iter.Seq2[chan string, *Config] {
-	return func(yield func(chan string, *Config) bool) {
-		m.subscribers.Range(func(key, value any) bool {
-			ch, ok := key.(chan string)
+// iterSubscribers returns a sequence of all current subscriptions.
+func (m *Manager) iterSubscribers() iter.Seq[*subscription] {
+	return func(yield func(*subscription) bool) {
+		m.subscribers.Range(func(_, value any) bool {
+			sub, ok := value.(*subscription)
 			if !ok {
+				m.logger.Error("Invalid subscriber type; skipping subscriber")
 				return true
 			}
 
-			config, ok := value.(*Config)
-			if !ok {
-				m.logger.Error("Invalid subscriber config type; skipping subscriber")
-				return true
-			}
-
-			return yield(ch, config)
+			return yield(sub)
 		})
 	}
 }
