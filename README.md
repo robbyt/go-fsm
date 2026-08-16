@@ -379,7 +379,7 @@ Subscribe to state change notifications using channels. This is useful for updat
 
 #### Simple Method (Recommended)
 
-Use the built-in `GetStateChan()` method for state notifications:
+Use the built-in `Subscribe()` method for state notifications:
 
 ```go
 import (
@@ -401,7 +401,7 @@ defer cancel()
 
 // Register a buffered channel; the current state is sent immediately.
 stateChan := make(chan string, 10)
-_ = machine.GetStateChan(ctx, stateChan)
+_ = machine.Subscribe(ctx, stateChan)
 
 go func() {
 	for {
@@ -418,7 +418,7 @@ go func() {
 _ = machine.Transition(transitions.StatusBooting)
 ```
 
-The `GetStateChan()` method:
+The `Subscribe()` method:
 - Automatically sets up broadcast management
 - Sends the current state immediately upon subscription
 - Unsubscribes the channel when the context is cancelled

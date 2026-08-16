@@ -11,7 +11,7 @@ This guide walks through migrating a Go codebase from `github.com/robbyt/go-fsm`
 | **Logger Setup** | Required as first parameter to `New` constructor | Optional via `fsm.WithLogHandler(handler)` |
 | **State Constants** | `fsm.StatusNew`, `fsm.StatusBooting`, etc. | `transitions.StatusNew`, `transitions.StatusBooting`, etc. |
 | **Transitions Type** | `map[string][]string` (also `fsm.TypicalTransitions`) | `*transitions.Config` (use `transitions.Typical` for common transitions) |
-| **State Broadcasting** | `stateChan := machine.GetStateChan(ctx)` | `err := machine.GetStateChan(ctx, chan)` with a user-created channel |
+| **State Broadcasting** | `stateChan := machine.GetStateChan(ctx)` | `err := machine.Subscribe(ctx, chan)` with a user-created channel |
 | **Broadcast Timeout** | `fsm.WithSyncTimeout(duration)` | `fsm.WithBroadcastTimeout(duration)` option |
 | **Hooks/Callbacks** | Not supported | New `hooks.Registry` with pre/post hooks |
 
@@ -19,7 +19,7 @@ This guide walks through migrating a Go codebase from `github.com/robbyt/go-fsm`
 
 **Key Feature:** v2 provides a **built-in helper method** for state broadcasting that's simpler than manual setup:
 
-- ✅ **One Method Call**: `machine.GetStateChan(ctx, chan)` handles everything
+- ✅ **One Method Call**: `machine.Subscribe(ctx, chan)` handles everything
 - ✅ **Automatic Hook Registration**: Broadcast hook registered automatically on first call
 - ✅ **v1 Compatible**: Sends initial state immediately (just like v1)
 - ✅ **You Control the Channel**: Create buffered or unbuffered channels as needed
@@ -91,7 +91,7 @@ import (
     "github.com/robbyt/go-fsm/v2"
     "github.com/robbyt/go-fsm/v2/transitions"
     "github.com/robbyt/go-fsm/v2/hooks"           // if using callbacks
-    "github.com/robbyt/go-fsm/v2/hooks/broadcast" // if using GetStateChan
+    "github.com/robbyt/go-fsm/v2/hooks/broadcast" // if using Subscribe
 )
 ```
 
@@ -179,7 +179,7 @@ Do you need state change notifications?
 └─ YES → Choose your approach:
     │
     ├─ SIMPLE (Recommended for 90% of use cases)
-    │  ✅ Use: machine.GetStateChan(ctx, chan)
+    │  ✅ Use: machine.Subscribe(ctx, chan)
     │  ✅ When: Standard broadcasting, single FSM, v1 compatibility
     │  ✅ Benefits: Automatic setup, simpler code, less boilerplate
     │
@@ -228,8 +228,8 @@ machine, err := fsm.New(
 // 3. Create your channel (you control buffer size)
 stateChan := make(chan string, 10)
 
-// 4. Register the channel with GetStateChan
-err = machine.GetStateChan(ctx, stateChan)
+// 4. Register the channel with Subscribe
+err = machine.Subscribe(ctx, stateChan)
 if err != nil {
     // Handle error
 }
@@ -287,7 +287,7 @@ for state := range stateChan {
 
 1. **Channel Creation**: You create and own the channel (control buffer size)
 2. **Registry Required**: Must use `hooks.Registry` with `WithTransitions()`
-3. **v1 Compatible**: `machine.GetStateChan()` sends initial state immediately (like v1)
+3. **v1 Compatible**: `machine.Subscribe()` sends initial state immediately (like v1)
 4. **Configurable Timeout**: Use `WithBroadcastTimeout()` option (replaces v1's `WithSyncTimeout`)
 5. **Error Handling**: Returns error instead of just returning a channel
 
@@ -344,13 +344,13 @@ type Machine struct {
 func (m *Machine) GetStateChan(ctx context.Context) <-chan string {
     ch := make(chan string, 10)
 
-    err := m.Machine.GetStateChan(ctx, ch)
+    err := m.Machine.Subscribe(ctx, ch)
     if err != nil {
         close(ch)
         return ch
     }
 
-    // machine.GetStateChan already sends current state immediately (v1 compatible!)
+    // machine.Subscribe already sends current state immediately (v1 compatible!)
     return ch
 }
 
@@ -497,7 +497,7 @@ machine, err := fsm.New(
 machine, err := fsm.New(handler, fsm.StatusNew, fsm.TypicalTransitions)
 stateChan := machine.GetStateChan(ctx)
 
-// v2 - using built-in GetStateChan helper
+// v2 - using built-in Subscribe helper
 registry, err := hooks.NewRegistry(
     hooks.WithLogHandler(handler),
     hooks.WithTransitions(transitions.Typical),
@@ -511,7 +511,7 @@ machine, err := fsm.New(
 )
 
 stateChan := make(chan string, 10)
-err = machine.GetStateChan(ctx, stateChan)
+err = machine.Subscribe(ctx, stateChan)
 
 // Use the channel
 for state := range stateChan {
@@ -545,11 +545,11 @@ machine, err := fsm.New("draft", customTrans)
 ### Error: "cannot use map[string][]string as type transitionDB"
 **Solution:** Wrap map with `transitions.MustNew(yourMap)` or use `transitions.New(yourMap)`
 
-### Error: "GetStateChan requires a callback registry"
+### Error: "Subscribe requires a callback registry"
 **Solution:** Use `fsm.WithCallbackRegistry(registry)` when creating the FSM. The registry must be created with `hooks.WithTransitions()` for wildcard support.
 
 ### Error: "requires a callback registry that supports dynamic hook registration"
-**Solution:** Use `hooks.Registry` instead of a custom CallbackExecutor. The FSM's built-in `GetStateChan` requires the registry to support dynamic hook registration.
+**Solution:** Use `hooks.Registry` instead of a custom CallbackExecutor. The FSM's built-in `Subscribe` requires the registry to support dynamic hook registration.
 
 ### Error: "wildcard '*' cannot be used without state table"
 **Solution:** When using wildcard hooks (`"*"`), you must pass `hooks.WithTransitions()` to the registry.
@@ -569,7 +569,7 @@ Use this checklist to verify your migration:
 - [ ] Replaced `fsm.StatusX` with `transitions.StatusX`
 - [ ] Replaced `fsm.TypicalTransitions` with `transitions.Typical`
 - [ ] Updated `fsm.New()` constructor calls (moved handler to options)
-- [ ] Migrated `GetStateChan()` to use `machine.GetStateChan(ctx, chan)` with hooks.Registry
+- [ ] Migrated `GetStateChan()` to `machine.Subscribe(ctx, chan)` with hooks.Registry
 - [ ] Added `WithBroadcastTimeout()` option if custom timeout needed (replaces `WithSyncTimeout`)
 - [ ] **Created single abstraction constructor (if architecture supports it)**
 - [ ] Updated all tests

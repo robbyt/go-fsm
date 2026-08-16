@@ -2,7 +2,7 @@
 
 Provides state change notifications through channels when registered as a post-transition hook.
 
-**Note:** For most use cases, use the built-in `machine.GetStateChan()` method instead of manually configuring a broadcast manager. This package is for advanced scenarios requiring custom broadcast logic, multiple managers, or fine-grained hook control. See the [main README](../../README.md#subscribing-to-state-changes) for the simpler approach.
+**Note:** For most use cases, use the built-in `machine.Subscribe()` method instead of manually configuring a broadcast manager. This package is for advanced scenarios requiring custom broadcast logic, multiple managers, or fine-grained hook control. See the [main README](../../README.md#subscribing-to-state-changes) for the simpler approach.
 
 ## Usage
 

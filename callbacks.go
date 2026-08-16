@@ -39,7 +39,7 @@ type CallbackExecutor interface {
 }
 
 // HookRegistrar extends CallbackExecutor with dynamic hook registration.
-// This interface is used by GetStateChan to register broadcast hooks dynamically.
+// This interface is used by Subscribe to register broadcast hooks dynamically.
 // The hooks.Registry type implements this interface.
 type HookRegistrar interface {
 	RegisterPostTransitionHook(config hooks.PostTransitionHookConfig) error

@@ -338,7 +338,7 @@ func TestReadme_SubscribingToStateChanges(t *testing.T) {
 
 		// 3. Create a channel and register it
 		stateChan := make(chan string, 10)
-		err = machine.GetStateChan(ctx, stateChan)
+		err = machine.Subscribe(ctx, stateChan)
 		require.NoError(t, err)
 
 		// 4. Should receive initial state immediately
