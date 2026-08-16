@@ -615,11 +615,11 @@ func TestGetStateChan_BackgroundContextSpawnsNoGoroutine(t *testing.T) {
 			require.NotNil(t, ch)
 		}
 
-		// On the old code three goroutines are durably blocked on a nil Done()
-		// channel here, and the bubble fails with a deadlock.
+		// Deliberately no UnsubscribeAll: the defect is that a subscriber that is
+		// simply dropped leaves a goroutine parked forever. synctest fails the
+		// bubble if any goroutine is still blocked when it exits, so reaching the
+		// end with the three subscriptions still registered is the assertion.
 		synctest.Wait()
-
-		manager.UnsubscribeAll()
 	})
 }
 
@@ -696,4 +696,51 @@ func TestUnsubscribeAll_EndsEverySubscriptionEvenWhenBroadcastIsBlocked(t *testi
 			})
 		})
 	}
+}
+
+// TestGetStateChan_NoGoroutineOutlivesTheSubscription pins, with synctest, that
+// ending a subscription by either route leaves nothing behind: a synctest bubble
+// fails if any goroutine is still parked when it exits, which is exactly the
+// leak the AfterFunc-based cleanup exists to prevent.
+func TestGetStateChan_NoGoroutineOutlivesTheSubscription(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Context cancellation", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			manager := broadcast.NewManager(newTestLogger().Handler())
+			ctx, cancel := context.WithCancel(t.Context())
+
+			ch, err := manager.GetStateChan(ctx, broadcast.WithBufferSize(1))
+			require.NoError(t, err)
+
+			cancel()
+			synctest.Wait()
+
+			_, open := <-ch
+			assert.False(t, open, "manager-owned channel should be closed after cancellation")
+			// Bubble exit asserts no goroutine remains.
+		})
+	})
+
+	t.Run("UnsubscribeAll then a late context cancellation", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			manager := broadcast.NewManager(newTestLogger().Handler())
+			ctx, cancel := context.WithCancel(t.Context())
+
+			ch, err := manager.GetStateChan(ctx, broadcast.WithBufferSize(1))
+			require.NoError(t, err)
+
+			manager.UnsubscribeAll()
+			synctest.Wait()
+			_, open := <-ch
+			assert.False(t, open, "manager-owned channel should be closed by UnsubscribeAll")
+
+			// The caller's context outlived the subscription. Cancelling it now
+			// must be a no-op: no second close, no goroutine left parked.
+			cancel()
+			synctest.Wait()
+
+			manager.Broadcast("after")
+		})
+	})
 }
