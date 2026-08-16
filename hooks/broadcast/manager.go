@@ -68,6 +68,22 @@ func (s *subscription) signalDepart() {
 	s.signalOnce.Do(func() { close(s.departed) })
 }
 
+// live reports whether this subscription still receives broadcasts. Departure
+// counts as dead as well as context cancellation: teardown signals departure
+// before it can acquire the manager mutex, and a Subscribe that wins the
+// mutex in that window must see the slot as free rather than rejecting the new
+// registration as a duplicate.
+func (s *subscription) live() bool {
+	select {
+	case <-s.departed:
+		return false
+	case <-s.ctxDone: // nil for a non-cancellable context, and never ready
+		return false
+	default:
+		return true
+	}
+}
+
 // Manager handles state change notifications to subscribers.
 type Manager struct {
 	mu sync.Mutex
@@ -77,8 +93,9 @@ type Manager struct {
 	// The locking discipline here is deliberately path-dependent, and a future
 	// change to a plain map must preserve both halves:
 	//
-	//   - GetStateChan arms context cleanup and stores under mu, because the pair
-	//     has to be atomic (see GetStateChan).
+	//   - GetStateChan does its duplicate Load and its Store under mu, because
+	//     the pair has to be atomic or two concurrent registrations of the same
+	//     channel both succeed.
 	//   - UnsubscribeAll's first pass reads WITHOUT mu, because it must signal
 	//     departure before contending for a mutex that a broadcast parked on a
 	//     blocking send is holding.
@@ -113,10 +130,22 @@ func NewManager(handler slog.Handler) *Manager {
 // Passing a non-cancellable context (context.Background()) is supported and
 // costs nothing, but leaves UnsubscribeAll as the only way to end the
 // subscription, so a subscriber that is simply dropped stays registered for the
-// lifetime of the manager. Prefer a cancellable context.
+// lifetime of the manager. Prefer a cancellable context. An already-cancelled
+// context is rejected.
+//
+// A channel may hold only one live subscription per manager: subscribing the
+// same channel twice returns an error while the first subscription is live.
+// Re-subscribing a channel whose previous subscription has ended is allowed,
+// as is subscribing one channel to several managers.
 func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan string, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("context cannot be nil")
+	}
+
+	// Reject an already-cancelled context rather than registering a subscription
+	// that is dead on arrival and would be torn down again immediately.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("cannot subscribe with a cancelled context: %w", err)
 	}
 
 	config := &Config{}
@@ -149,14 +178,27 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 	// that callback finish departing before the Store below published the
 	// subscription, leaving a departed (and possibly closed) entry in the map.
 	// Holding m.mu across arm-and-store closes that window: depart signals
-	// without a lock but cannot reach its removal until we release, at which
-	// point it correctly removes what we just stored.
+	// without a lock but cannot reach its CompareAndDelete until we release, at
+	// which point it correctly removes what we just stored.
 	//
 	// AfterFunc also replaces a `go func() { <-ctx.Done(); ... }()` cleanup
 	// goroutine. For a non-cancellable context (context.Background()) it
 	// registers nothing and starts nothing, so such a subscriber no longer leaks
 	// a parked goroutine; it lives until UnsubscribeAll.
+	//
+	// The duplicate check shares this critical section: splitting it from the
+	// Store would let two concurrent registrations of the same channel both pass.
 	m.mu.Lock()
+	if value, loaded := m.subscribers.Load(sub.key()); loaded {
+		if existing, ok := value.(*subscription); ok && existing.live() {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("channel is already subscribed")
+		}
+		// The entry is dead: its context was cancelled, or an unsubscribe
+		// signalled departure and is still waiting for this mutex. Take the slot
+		// over -- depart uses CompareAndDelete, so the older teardown cannot
+		// evict us.
+	}
 	sub.stopAfterFunc = context.AfterFunc(ctx, func() { m.depart(sub) })
 	m.subscribers.Store(sub.key(), sub)
 	m.mu.Unlock()
@@ -188,15 +230,15 @@ func (m *Manager) UnsubscribeAll() {
 	for sub := range m.iterSubscribers() {
 		sub.signalDepart()
 		seen[sub] = struct{}{}
-		if _, loaded := m.subscribers.LoadAndDelete(sub.key()); loaded && !sub.externalChannel {
+		if m.subscribers.CompareAndDelete(sub.key(), sub) && !sub.externalChannel {
 			close(sub.ch)
 		}
 	}
 	m.mu.Unlock()
 
-	// Phase 3: release the context associations for everything either pass saw,
-	// so a later cancellation neither runs depart nor keeps the subscription
-	// reachable from its context.
+	// Phase 3: release the context associations for everything either pass saw.
+	// A take-over can make phase 1 observe an old record and phase 2 its
+	// replacement, so both need stopping.
 	for sub := range seen {
 		sub.stopAfterFunc()
 	}
@@ -298,13 +340,10 @@ func (m *Manager) depart(sub *subscription) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// LoadAndDelete rather than a bare Delete so that the removal reports
-	// whether it was this call that took the entry out. depart and
-	// UnsubscribeAll can both target the same subscription -- a context
-	// cancelled while UnsubscribeAll is running, say -- and both close
-	// manager-owned channels; the mutex serialises them, and only the one that
-	// actually removed the entry closes.
-	if _, loaded := m.subscribers.LoadAndDelete(sub.key()); loaded && !sub.externalChannel {
+	// CompareAndDelete rather than Delete: the same channel may already have been
+	// re-subscribed under a new subscription, and a late departure must neither
+	// evict that newer entry nor close the channel it is now using.
+	if m.subscribers.CompareAndDelete(sub.key(), sub) && !sub.externalChannel {
 		// Closing under m.mu is the send/close barrier: broadcasts hold the same
 		// mutex and wait for their send goroutines, so none is in flight here.
 		close(sub.ch)
