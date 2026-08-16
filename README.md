@@ -421,8 +421,28 @@ _ = machine.Transition(transitions.StatusBooting)
 The `Subscribe()` method:
 - Automatically sets up broadcast management
 - Sends the current state immediately upon subscription
-- Unsubscribes the channel when the context is cancelled
+- Ends the subscription when the context is cancelled
 - Supports multiple concurrent subscribers
+- Accepts each channel only once per machine; subscribing the same channel again returns an error
+
+#### Ending a Subscription
+
+Cancelling the context ends the subscription. The channel is yours: the FSM never
+closes it, and you should not close it while it is still subscribed.
+
+When a `hooks.Registry` outlives the machines using it, call `Close` on a machine
+you are discarding. `Subscribe` registers a per-machine broadcast hook on the
+registry; without `Close` that hook — and its broadcast manager — keeps firing on
+every other machine's transitions for the life of the registry:
+
+```go
+machine, _ := fsm.New(transitions.StatusNew, transitions.Typical,
+	fsm.WithCallbackRegistry(sharedRegistry))
+defer machine.Close() // releases subscribers and removes the broadcast hook
+```
+
+`Close` releases only the subscription plumbing. The machine's state operations
+and any hooks you registered yourself keep working.
 
 Configure broadcast timeout behavior with `fsm.WithBroadcastTimeout()`:
 

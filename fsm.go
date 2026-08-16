@@ -37,6 +37,7 @@ package fsm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -85,11 +86,16 @@ type Machine struct {
 	id uint64
 
 	// subMu gates the lazily-created broadcast plumbing below. It is separate
-	// from mutex on purpose: the setup it guards runs before Subscribe takes the
-	// FSM lock, and it is never held while mutex is acquired.
-	subMu            sync.Mutex
+	// from mutex on purpose: a broadcast runs from a post-transition hook while
+	// mutex is held for writing, so Close must never take mutex -- it has to be
+	// able to reach the broadcast manager to release exactly that broadcast.
+	//
+	// Nested lock order: mutex -> subMu. Never acquire mutex while holding subMu.
+	subMu            sync.RWMutex
 	broadcastManager *broadcast.Manager
 	hookName         string
+	closed           bool
+	closeErr         error
 }
 
 // machineIDCounter stamps each Machine with a process-unique id. A pointer
@@ -393,17 +399,27 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 // ErrInvalidConfiguration. Subscribing a channel that is already subscribed returns
 // an error while the first subscription is live.
 //
-// The channel will automatically receive all future state transitions until the context
-// is cancelled, at which point it is automatically unsubscribed from receiving further broadcasts.
-// The channel is NOT closed; the caller maintains ownership and is responsible for channel lifecycle.
+// The channel receives all future state transitions until the context is cancelled, or
+// the Machine is closed with Close — whichever comes first. The channel is NOT closed;
+// the caller maintains ownership and is responsible for its lifecycle, and must not
+// close it while it is still subscribed.
+//
+// Passing a non-cancellable context (context.Background()) is supported, but then Close
+// is the only way to end the subscription: a subscriber that is simply dropped stays
+// registered for the life of the Machine. Prefer a cancellable context.
 //
 // Subscribe can be called multiple times with different channels and contexts. All channels
 // share the same broadcast manager, which is lazily initialized only once upon the first call.
+// A channel may hold only one live subscription per Machine; subscribing the same channel twice
+// returns an error. Re-subscribing a channel whose previous subscription has ended is allowed,
+// as is subscribing one channel to several Machines.
+// An already-cancelled context is rejected.
 //
 // Each Machine registers its broadcast hook under a name unique to that Machine, so a single
 // hooks.Registry may be shared across Machines without Subscribe failing. Note, however, that
-// hooks registered on a shared registry fire for every Machine's transitions; prefer one registry
-// per Machine unless that shared behavior is intended.
+// hooks registered on a shared registry fire for every Machine's transitions. When sharing a
+// registry, call Close on a Machine you are discarding, or its broadcast hook keeps firing on
+// every other Machine's transitions for the life of the registry.
 //
 // Broadcast delivery behavior is controlled by the timeout configured via WithBroadcastTimeout:
 //   - timeout = 0: best-effort delivery (non-blocking, drops if channel is full)
@@ -474,8 +490,7 @@ func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 		)
 	}
 
-	manager, err := fsm.ensureBroadcast(registrar)
-	if err != nil {
+	if _, err := fsm.ensureBroadcast(registrar); err != nil {
 		return err
 	}
 
@@ -490,11 +505,24 @@ func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 	fsm.mutex.RLock()
 	defer fsm.mutex.RUnlock()
 
-	if _, err := manager.GetStateChan(
+	// subMu is held for reading across registration and the initial send so a
+	// concurrent Close cannot detach the manager underneath us and leave this
+	// subscriber permanently silent. Close takes it for writing, so it waits for
+	// subscriptions already in flight and blocks new ones. Both are read locks
+	// here, so concurrent Subscribe callers still proceed in parallel.
+	fsm.subMu.RLock()
+	defer fsm.subMu.RUnlock()
+
+	if fsm.closed {
+		return ErrMachineClosed
+	}
+
+	_, err := fsm.broadcastManager.GetStateChan(
 		ctx,
 		broadcast.WithCustomChannel(c),
 		broadcast.WithTimeout(fsm.broadcastTimeout),
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("failed to register channel: %w", err)
 	}
 
@@ -523,16 +551,20 @@ func (fsm *Machine) GetStateChan(ctx context.Context, c chan string) error {
 // ensureBroadcast lazily creates this Machine's broadcast manager and registers
 // its post-transition broadcast hook, returning the manager.
 //
-// It replaces a sync.Once, which cached a transient setup failure forever: a
-// Once cannot be undone, so one failed registration made every later Subscribe
-// on that Machine replay the same error with no way to recover. A failed setup
-// is no longer cached -- the next call retries.
+// It replaces a sync.Once, which Close made untenable: a Once cannot be undone,
+// reading the manager it writes from a goroutine that never called Do would be a
+// data race, and a cached setup error permanently poisoned the Machine. A failed
+// setup is no longer cached -- the next call retries.
 //
-// subMu is released before returning, so it is never held while acquiring
-// fsm.mutex and cannot deadlock against an in-flight transition.
+// subMu is released before returning, so this never holds it while acquiring
+// fsm.mutex and therefore does not participate in the mutex -> subMu order.
 func (fsm *Machine) ensureBroadcast(registrar HookRegistrar) (*broadcast.Manager, error) {
 	fsm.subMu.Lock()
 	defer fsm.subMu.Unlock()
+
+	if fsm.closed {
+		return nil, ErrMachineClosed
+	}
 
 	if fsm.broadcastManager != nil {
 		return fsm.broadcastManager, nil
@@ -556,4 +588,76 @@ func (fsm *Machine) ensureBroadcast(registrar HookRegistrar) (*broadcast.Manager
 	fsm.hookName = name
 
 	return manager, nil
+}
+
+// Close releases only the state-subscription resources this Machine created:
+// it ends every live Subscribe subscription and removes the broadcast hook
+// that Subscribe registered on the callback registry. It does NOT stop the
+// Machine -- GetState, Transition, SetState, MarshalJSON, and every hook the
+// caller registered themselves keep working exactly as before.
+//
+// Call it when discarding a Machine whose hooks.Registry outlives it (a shared
+// registry). Otherwise that hook, and the broadcast manager behind it, keep
+// firing on every transition of every other Machine using that registry.
+//
+// Channels supplied to Subscribe are owned by the caller and are not closed;
+// their subscribers see silence, exactly as when their context is cancelled.
+// After Close, Subscribe returns ErrMachineClosed.
+//
+// Close is idempotent, but it does not forget a failure: if removing the hook
+// fails, every subsequent call returns that same error, because a silently
+// orphaned hook is the exact condition Close exists to prevent.
+//
+// If the CallbackExecutor also provides RemoveHook(name string) error
+// (hooks.Registry does), Close removes the machine's broadcast hook; otherwise
+// the hook stays registered and Close returns an error naming it.
+//
+// Close blocks while an in-flight broadcast completes, and can block for as long
+// as a concurrent Subscribe holds the subscription gate -- which, with an
+// unbuffered channel and a non-cancellable context, may be indefinitely. Calling
+// it from a transition hook avoids the lock cycle: Close never takes the FSM
+// mutex, and hook executors release the registry lock before running hooks.
+// Hooks run in sequence, though, so if this machine's own broadcast hook earlier
+// in the same synchronous hook chain is parked in a blocking (negative-timeout)
+// send, a later hook calling Close is not reached until that send completes.
+func (fsm *Machine) Close() error {
+	fsm.subMu.Lock()
+	defer fsm.subMu.Unlock()
+
+	if fsm.closed {
+		return fsm.closeErr
+	}
+	fsm.closed = true
+
+	manager, hookName := fsm.broadcastManager, fsm.hookName
+	if manager == nil {
+		// Subscribe was never called: nothing was ever registered.
+		return nil
+	}
+
+	// Release subscribers first. UnsubscribeAll signals every subscription
+	// before taking the manager mutex, so it cannot be blocked by the very
+	// broadcast it is trying to free.
+	manager.UnsubscribeAll()
+	fsm.broadcastManager = nil
+	fsm.hookName = ""
+
+	remover, ok := fsm.callbacks.(interface{ RemoveHook(name string) error })
+	if !ok {
+		// Still closed and still unsubscribed: a partial failure must not leave
+		// the Machine half-open. Name the hook so it can be removed by hand.
+		fsm.closeErr = fmt.Errorf(
+			"%w: callback registry does not support removing hooks; hook %q is orphaned",
+			ErrInvalidConfiguration, hookName,
+		)
+		return fsm.closeErr
+	}
+
+	// A hook the caller already removed is not an error.
+	if err := remover.RemoveHook(hookName); err != nil && !errors.Is(err, hooks.ErrHookNotFound) {
+		fsm.closeErr = fmt.Errorf("failed to remove broadcast hook %q: %w", hookName, err)
+		return fsm.closeErr
+	}
+
+	return nil
 }
