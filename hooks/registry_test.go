@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/robbyt/go-fsm/v2/transitions"
 	"github.com/stretchr/testify/assert"
@@ -1211,5 +1213,286 @@ func TestRegisterHook_NilFuncRejected(t *testing.T) {
 			Name: "ok-action", From: []string{"a"}, To: []string{"b"},
 			Action: func(ctx context.Context, from, to string) {},
 		}))
+	})
+}
+
+// TestRegisterHook_DuplicateStatesFireOnce verifies that duplicate entries in a
+// hook's From or To list do not index the same hookEntry more than once.
+// Before buildConcreteIndexKeys de-duplicated its patterns, the cartesian
+// product produced repeated transitionKeys, the entry was appended to one index
+// slot once per duplicate, and the guard or action ran once per duplicate for a
+// single transition.
+func TestRegisterHook_DuplicateStatesFireOnce(t *testing.T) {
+	t.Parallel()
+
+	trans := transitions.MustNew(map[string][]string{
+		"a": {"b", "c"},
+		"b": {},
+		"c": {},
+	})
+
+	t.Run("Duplicate from state fires a pre-transition hook once", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		calls := 0
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "dup-from",
+			From: []string{"a", "a"},
+			To:   []string{"b"},
+			Guard: func(ctx context.Context, from, to string) error {
+				calls++
+				return nil
+			},
+		}))
+
+		require.NoError(t, reg.ExecutePreTransitionHooks(context.Background(), "a", "b"))
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("Duplicate to state fires a post-transition hook once", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		calls := 0
+		require.NoError(t, reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name: "dup-to",
+			From: []string{"a"},
+			To:   []string{"b", "b"},
+			Action: func(ctx context.Context, from, to string) {
+				calls++
+			},
+		}))
+
+		reg.ExecutePostTransitionHooks(context.Background(), "a", "b")
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("Duplicates in both lists fire once per matching transition", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		calls := make(map[string]int)
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "dup-both",
+			From: []string{"a", "a"},
+			To:   []string{"b", "b", "c"},
+			Guard: func(ctx context.Context, from, to string) error {
+				calls[from+"->"+to]++
+				return nil
+			},
+		}))
+
+		require.NoError(t, reg.ExecutePreTransitionHooks(context.Background(), "a", "b"))
+		require.NoError(t, reg.ExecutePreTransitionHooks(context.Background(), "a", "c"))
+		assert.Equal(t, map[string]int{"a->b": 1, "a->c": 1}, calls)
+	})
+
+	t.Run("Distinct states still expand to the full cartesian product", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		calls := make(map[string]int)
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "distinct",
+			From: []string{"a"},
+			To:   []string{"b", "c"},
+			Guard: func(ctx context.Context, from, to string) error {
+				calls[from+"->"+to]++
+				return nil
+			},
+		}))
+
+		require.NoError(t, reg.ExecutePreTransitionHooks(context.Background(), "a", "b"))
+		require.NoError(t, reg.ExecutePreTransitionHooks(context.Background(), "a", "c"))
+		assert.Equal(t, map[string]int{"a->b": 1, "a->c": 1}, calls)
+	})
+
+	t.Run("GetHooks reports the caller's patterns verbatim", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "verbatim",
+			From: []string{"a", "a"},
+			To:   []string{"b", "b"},
+			Guard: func(ctx context.Context, from, to string) error {
+				return nil
+			},
+		}))
+
+		hooks := reg.GetHooks()
+		require.Len(t, hooks, 1)
+		// De-duplication is confined to index construction; the reported
+		// metadata is whatever the caller registered.
+		assert.Equal(t, []string{"a", "a"}, hooks[0].FromStates)
+		assert.Equal(t, []string{"b", "b"}, hooks[0].ToStates)
+	})
+
+	t.Run("Wildcard hook with duplicate states fires once", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		calls := 0
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "dup-wildcard",
+			From: []string{"*", "*"},
+			To:   []string{"b", "b"},
+			Guard: func(ctx context.Context, from, to string) error {
+				calls++
+				return nil
+			},
+		}))
+
+		require.NoError(t, reg.ExecutePreTransitionHooks(context.Background(), "a", "b"))
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("Repeated unknown state still reports the unknown state", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		err = reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "dup-unknown",
+			From: []string{"zzz", "zzz"},
+			To:   []string{"b"},
+			Guard: func(ctx context.Context, from, to string) error {
+				return nil
+			},
+		})
+		require.ErrorContains(t, err, "unknown state 'zzz'")
+	})
+}
+
+// TestRegisterHook_ConfigSlicesAreCopied verifies that registration does not
+// alias the caller's From/To slices. Before the register methods cloned them,
+// mutating the caller's slice silently changed matching (a wildcard hook could
+// be disabled outright), and mutating it concurrently with a transition was a
+// data race: hookEntry.matches reads those slices from the executors, which
+// snapshot the index under RLock and then release it before iterating.
+func TestRegisterHook_ConfigSlicesAreCopied(t *testing.T) {
+	t.Parallel()
+
+	trans := transitions.MustNew(map[string][]string{"a": {"b"}, "b": {}})
+
+	t.Run("Mutating From after registration does not change matching", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		from := []string{"a"}
+		calls := 0
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "mut-from",
+			From: from,
+			To:   []string{"*"}, // wildcard forces runtime matching via hookEntry.matches
+			Guard: func(ctx context.Context, f, to string) error {
+				calls++
+				return nil
+			},
+		}))
+
+		from[0] = "zzz" // caller mutates their own slice after registration
+
+		require.NoError(t, reg.ExecutePreTransitionHooks(context.Background(), "a", "b"))
+		assert.Equal(t, 1, calls, "hook must still match the state it was registered with")
+	})
+
+	t.Run("Mutating To after registration does not change matching", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		to := []string{"b"}
+		calls := 0
+		require.NoError(t, reg.RegisterPostTransitionHook(PostTransitionHookConfig{
+			Name: "mut-to",
+			From: []string{"*"},
+			To:   to,
+			Action: func(ctx context.Context, f, t2 string) {
+				calls++
+			},
+		}))
+
+		to[0] = "zzz"
+
+		reg.ExecutePostTransitionHooks(context.Background(), "a", "b")
+		assert.Equal(t, 1, calls, "hook must still match the state it was registered with")
+	})
+
+	t.Run("Mutation is not visible through GetHooks", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		from := []string{"a"}
+		to := []string{"b"}
+		calls := 0
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "mut-both",
+			From: from,
+			To:   to,
+			Guard: func(ctx context.Context, f, t2 string) error {
+				calls++
+				return nil
+			},
+		}))
+
+		from[0] = "zzz"
+		to[0] = "zzz"
+
+		hooks := reg.GetHooks()
+		require.Len(t, hooks, 1)
+		assert.Equal(t, []string{"a"}, hooks[0].FromStates)
+		assert.Equal(t, []string{"b"}, hooks[0].ToStates)
+
+		// The concrete index key was built from the original values too.
+		require.NoError(t, reg.ExecutePreTransitionHooks(context.Background(), "a", "b"))
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("Concurrent mutation and execution is race-free", func(t *testing.T) {
+		reg, err := NewRegistry(WithLogger(slog.Default()), WithTransitions(trans))
+		require.NoError(t, err)
+
+		from := []string{"a"}
+		var executions atomic.Int64
+		require.NoError(t, reg.RegisterPreTransitionHook(PreTransitionHookConfig{
+			Name: "racy",
+			From: from,
+			To:   []string{"*"}, // wildcard: matches runs on every execution
+			Guard: func(ctx context.Context, f, to string) error {
+				executions.Add(1)
+				return nil
+			},
+		}))
+
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					if err := reg.ExecutePreTransitionHooks(context.Background(), "a", "b"); err != nil {
+						t.Errorf("unexpected hook error: %v", err)
+						return
+					}
+				}
+			}
+		})
+		// Always stop and join the executor goroutine, even if the loop below
+		// fails early, so it cannot outlive the test.
+		t.Cleanup(func() {
+			close(stop)
+			wg.Wait()
+		})
+
+		// Mutate the caller's slice while the executor reads the registry's copy.
+		// Wait for real overlap rather than assuming the goroutine got scheduled:
+		// without executions the race detector would have nothing to observe.
+		require.Eventually(t, func() bool {
+			from[0] = "zzz"
+			from[0] = "a"
+			return executions.Load() > 100
+		}, 500*time.Millisecond, time.Millisecond, "executor goroutine never overlapped with the mutations")
 	})
 }

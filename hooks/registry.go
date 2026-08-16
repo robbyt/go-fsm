@@ -237,10 +237,14 @@ func (r *Registry) RegisterPreTransitionHook(config PreTransitionHookConfig) err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Clone the caller's slices: hookEntry.matches reads them from the executors,
+	// which snapshot the index under RLock and release it before iterating, so a
+	// later caller-side mutation would silently change matching and a concurrent
+	// one would be a data race.
 	entry := &hookEntry{
 		guard:      config.Guard,
-		fromStates: config.From,
-		toStates:   config.To,
+		fromStates: slices.Clone(config.From),
+		toStates:   slices.Clone(config.To),
 		hookType:   HookTypePre,
 	}
 
@@ -254,10 +258,11 @@ func (r *Registry) RegisterPostTransitionHook(config PostTransitionHookConfig) e
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Clone the caller's slices; see RegisterPreTransitionHook for why.
 	entry := &hookEntry{
 		action:     config.Action,
-		fromStates: config.From,
-		toStates:   config.To,
+		fromStates: slices.Clone(config.From),
+		toStates:   slices.Clone(config.To),
 		hookType:   HookTypePost,
 	}
 
@@ -387,25 +392,18 @@ func (r *Registry) registerHookEntry(name string, entry *hookEntry) error {
 // Assumes no wildcards are present in the patterns (caller must check first).
 // Validates that all state names exist in the transition table if provided.
 func (r *Registry) buildConcreteIndexKeys(fromPatterns, toPatterns []string) ([]transitionKey, error) {
-	// Validate and collect from states
-	var fromStates []string
-	for _, pattern := range fromPatterns {
-		if r.transitions != nil && !r.transitions.HasState(pattern) {
-			return nil, fmt.Errorf("unknown state '%s'", pattern)
-		}
-		fromStates = append(fromStates, pattern)
+	fromStates, err := r.validateUniqueStates(fromPatterns)
+	if err != nil {
+		return nil, err
 	}
 
-	// Validate and collect to states
-	var toStates []string
-	for _, pattern := range toPatterns {
-		if r.transitions != nil && !r.transitions.HasState(pattern) {
-			return nil, fmt.Errorf("unknown state '%s'", pattern)
-		}
-		toStates = append(toStates, pattern)
+	toStates, err := r.validateUniqueStates(toPatterns)
+	if err != nil {
+		return nil, err
 	}
 
-	// Compute cartesian product
+	// Compute cartesian product. Both operands are duplicate-free, so every key
+	// is unique and the entry is indexed at most once per transition.
 	keys := make([]transitionKey, 0, len(fromStates)*len(toStates))
 	for _, from := range fromStates {
 		for _, to := range toStates {
@@ -414,6 +412,37 @@ func (r *Registry) buildConcreteIndexKeys(fromPatterns, toPatterns []string) ([]
 	}
 
 	return keys, nil
+}
+
+// validateUniqueStates validates each pattern against the transition table (when
+// one is configured) and returns the patterns with duplicates removed,
+// preserving first-occurrence order.
+//
+// De-duplication matters because these patterns feed a cartesian product used as
+// index keys. A repeated state produces a repeated key, which appends the same
+// hookEntry to one index slot more than once, and the guard or action then runs
+// once per duplicate for a single transition. Duplicates are dropped silently
+// rather than rejected: programmatically-assembled state lists commonly contain
+// them and the intended meaning is unambiguous.
+//
+// Validation runs before the duplicate check so a repeated unknown state still
+// reports the unknown-state error rather than being silently collapsed.
+func (r *Registry) validateUniqueStates(patterns []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(patterns))
+	unique := make([]string, 0, len(patterns))
+
+	for _, pattern := range patterns {
+		if r.transitions != nil && !r.transitions.HasState(pattern) {
+			return nil, fmt.Errorf("unknown state '%s'", pattern)
+		}
+		if _, dup := seen[pattern]; dup {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		unique = append(unique, pattern)
+	}
+
+	return unique, nil
 }
 
 // safeCallGuard executes a guard with panic recovery.
