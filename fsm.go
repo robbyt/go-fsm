@@ -56,7 +56,10 @@ import (
 // (GetAllStates, HasState, IsTransitionAllowed all run lock-free), so any
 // locking or copying needed for read safety is the implementation's
 // responsibility. The bundled transitions.Config satisfies this contract:
-// its index is built once at construction and never mutated.
+// its index is built once at construction and never mutated. The one exception
+// is transitions.Config.UnmarshalJSON, which rebuilds the config in place; see
+// its doc comment. Never unmarshal into a Config that is already attached to a
+// Machine.
 type transitionDB interface {
 	HasState(state string) bool
 	GetAllStates() []string
@@ -364,9 +367,14 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 // send honors the provided context — if ctx is cancelled while it is blocked, Subscribe returns
 // the context's error.
 //
-// This method requires the FSM to be configured with a hooks.Registry (via WithCallbackRegistry).
-// The registry must be created with WithTransitions() to support wildcard pattern matching.
-// Returns an error if the callback executor does not support dynamic hook registration.
+// This method requires the FSM to be configured (via WithCallbackRegistry) with a
+// CallbackExecutor that also implements HookRegistrar, such as a hooks.Registry.
+// A hooks.Registry must be created with WithTransitions() to support wildcard pattern matching.
+//
+// Errors: a nil ctx, a nil channel, a missing callback registry, or a registry that
+// does not support dynamic hook registration all return an error wrapping
+// ErrInvalidConfiguration. Subscribing a channel that is already subscribed returns
+// an error while the first subscription is live.
 //
 // The channel will automatically receive all future state transitions until the context
 // is cancelled, at which point it is automatically unsubscribed from receiving further broadcasts.
@@ -389,7 +397,8 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 //
 // The channel must be bidirectional (chan string, not <-chan string) to allow the FSM
 // to send state updates. The caller maintains ownership of the channel and controls
-// its buffer size and lifecycle.
+// its buffer size and lifecycle. It must be non-nil; a nil channel is rejected
+// without registering a subscriber.
 //
 // Example:
 //
@@ -424,16 +433,28 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 //	}()
 func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 	if ctx == nil {
-		return fmt.Errorf("context cannot be nil")
+		return fmt.Errorf("%w: context cannot be nil", ErrInvalidConfiguration)
+	}
+
+	// Reject a nil channel before anything is registered. A nil channel makes the
+	// initial-state send below block forever, and because that send happens under
+	// the FSM read lock it would wedge every subsequent Transition, SetState, and
+	// MarshalJSON on this machine, with no way to recover when the context is not
+	// cancellable.
+	if c == nil {
+		return fmt.Errorf("%w: state channel cannot be nil", ErrInvalidConfiguration)
 	}
 
 	if fsm.callbacks == nil {
-		return fmt.Errorf("Subscribe requires a callback registry")
+		return fmt.Errorf("%w: Subscribe requires a callback registry", ErrInvalidConfiguration)
 	}
 
 	registrar, ok := fsm.callbacks.(HookRegistrar)
 	if !ok {
-		return fmt.Errorf("Subscribe requires a callback registry that supports dynamic hook registration")
+		return fmt.Errorf(
+			"%w: Subscribe requires a callback registry that supports dynamic hook registration",
+			ErrInvalidConfiguration,
+		)
 	}
 
 	fsm.stateChanSetup.Do(func() {
@@ -478,7 +499,7 @@ func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 	// Honor the context during the initial send so a full/unbuffered channel
 	// cannot block here (and thus block transitions, since we hold the read
 	// lock) past the caller's cancellation. The subscriber is unsubscribed by
-	// the same ctx cancellation via the broadcast manager's cleanup goroutine.
+	// the same ctx cancellation, via the broadcast manager.
 	select {
 	case c <- fsm.GetState():
 	case <-ctx.Done():
