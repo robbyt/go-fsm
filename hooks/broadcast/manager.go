@@ -33,11 +33,12 @@ type subscription struct {
 	timeout         time.Duration
 	externalChannel bool
 
-	// ctxDone is the subscriber's context cancellation signal. Broadcast selects
-	// on it so a blocking send to a subscriber whose context has been cancelled
-	// is abandoned instead of holding the manager mutex forever. It is nil for a
-	// non-cancellable context, and a nil channel is never ready.
-	ctxDone <-chan struct{}
+	// done is closed when the subscription ends, whether by the subscriber's
+	// context being cancelled or by UnsubscribeAll -- both go through cancel.
+	// Broadcast selects on it so a blocking send to a subscriber that has gone
+	// away is abandoned instead of holding the manager mutex forever.
+	done   <-chan struct{}
+	cancel context.CancelFunc
 }
 
 // key returns the map key for this subscription. Subscribers are keyed by the
@@ -49,9 +50,15 @@ func (s *subscription) key() <-chan string {
 
 // Manager handles state change notifications to subscribers.
 type Manager struct {
-	mu          sync.Mutex
+	mu sync.Mutex
+
+	// subscribers maps <-chan string to *subscription. UnsubscribeAll ranges
+	// over it WITHOUT mu on its first pass, because it must signal departure
+	// before contending for a mutex that a parked broadcast may be holding; a
+	// plain map would need its own second lock for that.
 	subscribers sync.Map
-	logger      *slog.Logger
+
+	logger *slog.Logger
 }
 
 // NewManager creates a new broadcast manager.
@@ -64,10 +71,20 @@ func NewManager(handler slog.Handler) *Manager {
 	}
 }
 
-// GetStateChan returns a channel that receives state change notifications.
-// The channel is automatically closed when ctx is cancelled.
+// GetStateChan registers for state change notifications and returns the channel
+// they will be delivered on.
 // Use functional options to customize buffer size, timeout behavior, or provide a custom channel.
 // Returns an error if ctx is nil.
+//
+// Cancelling ctx ends the subscription; UnsubscribeAll ends every subscription
+// at once. A manager-owned channel is closed when the subscription ends; a
+// channel supplied via WithCustomChannel belongs to its caller, who is
+// responsible for closing it and must not do so while it is still subscribed.
+//
+// Passing a non-cancellable context (context.Background()) is supported and
+// costs nothing, but leaves UnsubscribeAll as the only way to end the
+// subscription, so a subscriber that is simply dropped stays registered for the
+// lifetime of the manager. Prefer a cancellable context.
 func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan string, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("context cannot be nil")
@@ -79,10 +96,16 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 		opt(config)
 	}
 
+	// Each subscription gets its own cancellable context derived from the
+	// caller's. Cancelling either one ends it; cancel is idempotent; and a
+	// cancelled child detaches from its parent, so an ended subscription holds
+	// no reference from a long-lived caller context.
+	subCtx, cancel := context.WithCancel(ctx)
 	sub := &subscription{
 		timeout:         config.timeout,
 		externalChannel: config.externalChannel,
-		ctxDone:         ctx.Done(),
+		done:            subCtx.Done(),
+		cancel:          cancel,
 	}
 
 	if config.channel != nil {
@@ -95,21 +118,38 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 		sub.externalChannel = false
 	}
 
-	// Register subscriber
 	m.mu.Lock()
 	m.subscribers.Store(sub.key(), sub)
 	m.mu.Unlock()
 
-	// Handle cleanup when context is cancelled
-	go func() {
-		<-ctx.Done()
-		m.depart(sub)
-		if !sub.externalChannel {
-			close(sub.ch)
-		}
-	}()
+	// context.AfterFunc replaces a `go func() { <-ctx.Done(); ... }()` cleanup
+	// goroutine: it starts nothing until the context is actually cancelled, so a
+	// subscriber on a non-cancellable context no longer leaks a parked
+	// goroutine. Armed after the Store so an already-cancelled context finds
+	// the entry it has to remove.
+	context.AfterFunc(subCtx, func() { m.remove(sub) })
 
 	return sub.ch, nil
+}
+
+// UnsubscribeAll ends every current subscription. It is used to release all
+// subscribers at once when tearing down whatever owns this manager.
+//
+// It signals every subscription before acquiring the manager mutex, so a
+// broadcast parked on a blocking send is released rather than waited on. A
+// subscription created concurrently is included if and only if it was stored
+// before the second pass acquired the mutex.
+func (m *Manager) UnsubscribeAll() {
+	for sub := range m.iterSubscribers() {
+		sub.cancel()
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for sub := range m.iterSubscribers() {
+		sub.cancel()
+		m.removeLocked(sub)
+	}
 }
 
 // Broadcast sends the state to all subscriber channels.
@@ -131,12 +171,10 @@ func (m *Manager) Broadcast(state string) {
 
 	for sub := range m.iterSubscribers() {
 		ch := sub.ch
-		// ctxDone is the subscriber's context cancellation signal. Selecting on
-		// it in the blocking branches ensures a subscriber that has gone away
-		// (its context was cancelled) cannot block the broadcast indefinitely
-		// while the manager mutex is held, which would otherwise deadlock
-		// departure and every future Broadcast.
-		done := sub.ctxDone
+		// done is the subscriber's departure signal. Selecting on it in the
+		// blocking branches ensures a subscriber that has gone away cannot block
+		// the broadcast indefinitely while the manager mutex is held.
+		done := sub.done
 		if sub.timeout < 0 {
 			// Negative timeout: block until delivered or the subscriber departs
 			// (guaranteed delivery for live subscribers).
@@ -187,11 +225,25 @@ func (m *Manager) BroadcastHook(_ context.Context, _, to string) {
 	m.Broadcast(to)
 }
 
-// depart removes a subscription from receiving broadcasts.
-func (m *Manager) depart(sub *subscription) {
+// remove takes an ended subscription out of the subscriber set and closes its
+// channel if the manager owns it. It runs after the subscription's context is
+// cancelled, so any broadcast parked on this subscriber has already been
+// released; acquiring m.mu is what makes the removal synchronous with respect
+// to broadcasts.
+func (m *Manager) remove(sub *subscription) {
 	m.mu.Lock()
-	m.subscribers.Delete(sub.key())
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	m.removeLocked(sub)
+}
+
+// removeLocked is remove with m.mu already held. LoadAndDelete so that only
+// the caller that actually removed the entry closes a manager-owned channel:
+// the context AfterFunc and UnsubscribeAll can both target the same
+// subscription, and the mutex serialises them.
+func (m *Manager) removeLocked(sub *subscription) {
+	if _, loaded := m.subscribers.LoadAndDelete(sub.key()); loaded && !sub.externalChannel {
+		close(sub.ch)
+	}
 }
 
 // iterSubscribers returns a sequence of all current subscriptions.
