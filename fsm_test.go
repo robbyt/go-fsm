@@ -685,54 +685,58 @@ func TestFSM_Subscribe(t *testing.T) {
 		assert.Contains(t, err.Error(), "context cannot be nil")
 	})
 
-	t.Run("Error: nil callbacks", func(t *testing.T) {
+	// Subscribe broadcasts from the Machine itself, so it works with no
+	// callback registry, with a CallbackExecutor that cannot register hooks,
+	// and with a registry that has no transition table for wildcard hooks.
+	// Each of these used to be an error.
+	t.Run("Success: no registry requirement", func(t *testing.T) {
+		registryWithoutTransitions, err := hooks.NewRegistry()
+		require.NoError(t, err)
+
+		tests := []struct {
+			name string
+			opts []Option
+		}{
+			{name: "nil callbacks"},
+			{name: "callbacks not HookRegistrar", opts: []Option{WithCallbackRegistry(newMockCallbackExecutor())}},
+			{name: "registry without transitions", opts: []Option{WithCallbackRegistry(registryWithoutTransitions)}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				mockDB := newMockTransitionDB(map[string][]string{
+					"state1": {"state2"},
+					"state2": {},
+				})
+				fsm, err := New("state1", mockDB, tt.opts...)
+				require.NoError(t, err)
+
+				c := make(chan string, 2)
+				require.NoError(t, fsm.Subscribe(t.Context(), c))
+				assert.Equal(t, "state1", <-c)
+
+				require.NoError(t, fsm.Transition("state2"))
+				assert.Equal(t, "state2", <-c)
+			})
+		}
+
+		assert.Empty(t, registryWithoutTransitions.GetHooks(),
+			"Subscribe must not register anything on the callback registry")
+	})
+
+	t.Run("Success: SetState is broadcast", func(t *testing.T) {
 		mockDB := newMockTransitionDB(map[string][]string{
 			"state1": {"state2"},
+			"state2": {},
 		})
-
 		fsm, err := New("state1", mockDB)
 		require.NoError(t, err)
 
-		ctx := context.Background()
-		c := make(chan string, 1)
-		err = fsm.Subscribe(ctx, c)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "Subscribe requires a callback registry")
-	})
+		c := make(chan string, 2)
+		require.NoError(t, fsm.Subscribe(t.Context(), c))
+		assert.Equal(t, "state1", <-c)
 
-	t.Run("Error: callbacks not HookRegistrar", func(t *testing.T) {
-		mockDB := newMockTransitionDB(map[string][]string{
-			"state1": {"state2"},
-		})
-		mockCallbacks := newMockCallbackExecutor()
-
-		fsm, err := New("state1", mockDB, WithCallbackRegistry(mockCallbacks))
-		require.NoError(t, err)
-
-		ctx := context.Background()
-		c := make(chan string, 1)
-		err = fsm.Subscribe(ctx, c)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "requires a callback registry that supports dynamic hook registration")
-	})
-
-	t.Run("Error: hook registration failure without transitions", func(t *testing.T) {
-		mockDB := newMockTransitionDB(map[string][]string{
-			"state1": {"state2"},
-		})
-
-		// Create registry WITHOUT WithTransitions - wildcard "*" will fail
-		registry, err := hooks.NewRegistry()
-		require.NoError(t, err)
-
-		fsm, err := New("state1", mockDB, WithCallbackRegistry(registry))
-		require.NoError(t, err)
-
-		ctx := context.Background()
-		c := make(chan string, 1)
-		err = fsm.Subscribe(ctx, c)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "wildcard")
+		require.NoError(t, fsm.SetState("state2"))
+		assert.Equal(t, "state2", <-c)
 	})
 
 	t.Run("Success: basic usage with buffered channel", func(t *testing.T) {
@@ -905,13 +909,37 @@ func TestFSM_Subscribe(t *testing.T) {
 	})
 }
 
-// TestSubscribe_SharedRegistry verifies that two machines can share a single
-// hooks.Registry. Previously Subscribe registered its broadcast hook under a
-// constant name, so the second machine's registration failed with
-// ErrHookNameAlreadyExists and, because the error is cached in sync.Once, that
-// machine's Subscribe failed permanently. With a per-machine hook name both
-// machines can subscribe.
-func TestSubscribe_SharedRegistry(t *testing.T) {
+// TestSubscribe_FromCustomOption verifies that a custom Option may subscribe
+// and transition while New is still applying options. Option is an exported
+// func(*Machine) error, so this is a supported extension point, and the
+// broadcast path must not depend on New having finished.
+func TestSubscribe_FromCustomOption(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan string, 2)
+	subscribeAndBoot := func(m *Machine) error {
+		if err := m.Subscribe(t.Context(), ch); err != nil {
+			return err
+		}
+		return m.Transition(transitions.StatusBooting)
+	}
+
+	machine, err := New(transitions.StatusNew, transitions.Typical, subscribeAndBoot)
+	require.NoError(t, err)
+	assert.Equal(t, transitions.StatusNew, <-ch)
+	assert.Equal(t, transitions.StatusBooting, <-ch)
+
+	// The subscription made during construction keeps receiving afterwards.
+	require.NoError(t, machine.Transition(transitions.StatusRunning))
+	assert.Equal(t, transitions.StatusRunning, <-ch)
+}
+
+// TestSubscribe_SharedRegistryIsolatesMachines verifies that machines sharing
+// one hooks.Registry deliver only their own transitions to their subscribers.
+// When broadcasting was a wildcard post-transition hook registered on the
+// registry, every machine's hook fired on every machine's transitions, so a
+// subscriber to m2 received m1's states.
+func TestSubscribe_SharedRegistryIsolatesMachines(t *testing.T) {
 	t.Parallel()
 
 	reg, err := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
@@ -922,17 +950,22 @@ func TestSubscribe_SharedRegistry(t *testing.T) {
 	m2, err := New(transitions.StatusNew, transitions.Typical, WithCallbackRegistry(reg))
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
 	ch1 := make(chan string, 10)
 	ch2 := make(chan string, 10)
-	require.NoError(t, m1.Subscribe(ctx, ch1))
-	require.NoError(t, m2.Subscribe(ctx, ch2)) // previously failed permanently
-
-	// Each subscriber receives its own machine's initial state.
+	mustSubscribe(t, m1, t.Context(), ch1)
+	mustSubscribe(t, m2, t.Context(), ch2)
 	assert.Equal(t, transitions.StatusNew, <-ch1)
 	assert.Equal(t, transitions.StatusNew, <-ch2)
+
+	// Broadcasts are delivered synchronously before Transition returns, so the
+	// channels can be inspected immediately.
+	require.NoError(t, m1.Transition(transitions.StatusBooting))
+	assert.Equal(t, transitions.StatusBooting, <-ch1)
+	assert.Empty(t, ch2, "m2's subscriber must not receive m1's transition")
+
+	require.NoError(t, m2.Transition(transitions.StatusBooting))
+	assert.Equal(t, transitions.StatusBooting, <-ch2)
+	assert.Empty(t, ch1, "m1's subscriber must not receive m2's transition")
 }
 
 // TestSubscribe_InitialSendIsAtomic verifies that registering a subscriber
@@ -1138,14 +1171,14 @@ func TestSubscribe_NilChannelRejected(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidConfiguration)
 		require.ErrorContains(t, err, "state channel cannot be nil")
 
-		// The rejection happens before setup, so no broadcast hook was registered.
+		// Nothing was registered on the callback registry.
 		assert.Empty(t, reg.GetHooks())
 
 		// The read lock was never taken: transitions still work.
 		require.NoError(t, machine.Transition(transitions.StatusBooting))
 		assert.Equal(t, transitions.StatusBooting, machine.GetState())
 
-		// Setup was not consumed: a later valid subscription still succeeds.
+		// A later valid subscription still succeeds.
 		ch := make(chan string, 1)
 		mustSubscribe(t, machine, t.Context(), ch)
 		assert.Equal(t, transitions.StatusBooting, <-ch)

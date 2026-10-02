@@ -20,7 +20,7 @@ This guide walks through migrating a Go codebase from `github.com/robbyt/go-fsm`
 **Key Feature:** v2 provides a **built-in helper method** for state broadcasting that's simpler than manual setup:
 
 - ✅ **One Method Call**: `machine.Subscribe(ctx, chan)` handles everything
-- ✅ **Automatic Hook Registration**: Broadcast hook registered automatically on first call
+- ✅ **No Wiring**: The machine broadcasts state changes itself; no hook or registry needed
 - ✅ **v1 Compatible**: Sends initial state immediately (just like v1)
 - ✅ **You Control the Channel**: Create buffered or unbuffered channels as needed
 - ✅ **Clean Error Handling**: Returns errors instead of panicking
@@ -91,7 +91,7 @@ import (
     "github.com/robbyt/go-fsm/v2"
     "github.com/robbyt/go-fsm/v2/transitions"
     "github.com/robbyt/go-fsm/v2/hooks"           // if using callbacks
-    "github.com/robbyt/go-fsm/v2/hooks/broadcast" // if using Subscribe
+    "github.com/robbyt/go-fsm/v2/hooks/broadcast" // only if using broadcast.Manager directly
 )
 ```
 
@@ -167,6 +167,17 @@ machine, err := fsm.New(
 
 ### Step 7: Migrate GetStateChan Usage (Critical)
 
+> **New in v2.6:** `machine.GetStateChan` is renamed to `machine.Subscribe`
+> (same signature; the old name is kept as a deprecated wrapper and will be
+> removed in the next major version). `Subscribe` no longer needs a callback
+> registry: the machine broadcasts state changes itself, after post-transition
+> hooks, and no longer registers a hook on your registry. That also fixes
+> machines sharing one `hooks.Registry` receiving each other's states. Also
+> tightened: subscribing the same channel twice on one machine returns an
+> error, subscribing with an already-cancelled context fails deterministically
+> instead of racing, and a nil channel returns an error wrapping
+> `fsm.ErrInvalidConfiguration` rather than deadlocking the machine.
+
 This changed significantly in v2. The v2 API provides a built-in helper method on the FSM.
 
 #### Decision Guide: Which Broadcasting Pattern Should You Use?
@@ -210,25 +221,18 @@ for state := range stateChan {
 ```go
 // v2 code - simpler pattern using built-in helper
 
-// 1. Create a hooks registry with transitions (required for broadcast)
-registry, err := hooks.NewRegistry(
-    hooks.WithLogHandler(handler),
-    hooks.WithTransitions(transitions.Typical),
-)
-
-// 2. Create FSM with the registry
+// 1. Create the FSM (no hooks.Registry needed for broadcasting)
 machine, err := fsm.New(
     transitions.StatusNew,
     transitions.Typical,
     fsm.WithLogHandler(handler),
-    fsm.WithCallbackRegistry(registry),
     fsm.WithBroadcastTimeout(5*time.Second), // Optional: configure broadcast timeout
 )
 
-// 3. Create your channel (you control buffer size)
+// 2. Create your channel (you control buffer size)
 stateChan := make(chan string, 10)
 
-// 4. Register the channel with Subscribe
+// 3. Register the channel with Subscribe
 err = machine.Subscribe(ctx, stateChan)
 if err != nil {
     // Handle error
@@ -286,7 +290,7 @@ for state := range stateChan {
 #### Key Changes from v1:
 
 1. **Channel Creation**: You create and own the channel (control buffer size)
-2. **Registry Required**: Must use `hooks.Registry` with `WithTransitions()`
+2. **No Registry Required**: The machine broadcasts by itself (v2.6+; earlier v2 releases required a `hooks.Registry` with `WithTransitions()`)
 3. **v1 Compatible**: `machine.Subscribe()` sends initial state immediately (like v1)
 4. **Configurable Timeout**: Use `WithBroadcastTimeout()` option (replaces v1's `WithSyncTimeout`)
 5. **Error Handling**: Returns error instead of just returning a channel
@@ -295,10 +299,10 @@ for state := range stateChan {
 
 **Best Practice:** Use a single local abstraction constructor to centralize all v2 setup complexity.
 
-Instead of repeating the broadcast manager + hooks registry setup everywhere you create an FSM, encapsulate it in ONE constructor function. This approach:
+Instead of repeating FSM setup (logger, options, any hooks registry) everywhere you create an FSM, encapsulate it in ONE constructor function. This approach:
 
 - **Reduces duplication** - Setup code appears only once
-- **Prevents errors** - No risk of forgetting to wire up broadcast hooks in different places
+- **Prevents errors** - No risk of configuring machines inconsistently in different places
 - **Simplifies maintenance** - Future changes (like adding new hooks) happen in one location
 - **Maintains clean architecture** - Rest of codebase uses v1-like API
 - **Makes testing easier** - Single point to mock or configure for tests
@@ -315,8 +319,6 @@ import (
     "log/slog"
 
     "github.com/robbyt/go-fsm/v2"
-    "github.com/robbyt/go-fsm/v2/hooks"
-    "github.com/robbyt/go-fsm/v2/hooks/broadcast"
     "github.com/robbyt/go-fsm/v2/transitions"
 )
 
@@ -356,19 +358,12 @@ func (m *Machine) GetStateChan(ctx context.Context) <-chan string {
 
 // New creates a new FSM with v1-like API
 func New(handler slog.Handler) (*Machine, error) {
-    registry, err := hooks.NewRegistry(
-        hooks.WithLogHandler(handler),
-        hooks.WithTransitions(TypicalTransitions),
-    )
-    if err != nil {
-        return nil, err
-    }
-
+    // Subscribe needs no hooks.Registry. Add fsm.WithCallbackRegistry here
+    // only if you register your own transition hooks.
     f, err := fsm.New(
         StatusNew,
         TypicalTransitions,
         fsm.WithLogHandler(handler),
-        fsm.WithCallbackRegistry(registry),
     )
     if err != nil {
         return nil, err
@@ -545,12 +540,6 @@ machine, err := fsm.New("draft", customTrans)
 ### Error: "cannot use map[string][]string as type transitionDB"
 **Solution:** Wrap map with `transitions.MustNew(yourMap)` or use `transitions.New(yourMap)`
 
-### Error: "Subscribe requires a callback registry"
-**Solution:** Use `fsm.WithCallbackRegistry(registry)` when creating the FSM. The registry must be created with `hooks.WithTransitions()` for wildcard support.
-
-### Error: "requires a callback registry that supports dynamic hook registration"
-**Solution:** Use `hooks.Registry` instead of a custom CallbackExecutor. The FSM's built-in `Subscribe` requires the registry to support dynamic hook registration.
-
 ### Error: "wildcard '*' cannot be used without state table"
 **Solution:** When using wildcard hooks (`"*"`), you must pass `hooks.WithTransitions()` to the registry.
 
@@ -569,7 +558,7 @@ Use this checklist to verify your migration:
 - [ ] Replaced `fsm.StatusX` with `transitions.StatusX`
 - [ ] Replaced `fsm.TypicalTransitions` with `transitions.Typical`
 - [ ] Updated `fsm.New()` constructor calls (moved handler to options)
-- [ ] Migrated `GetStateChan()` to `machine.Subscribe(ctx, chan)` with hooks.Registry
+- [ ] Migrated `GetStateChan()` to `machine.Subscribe(ctx, chan)`
 - [ ] Added `WithBroadcastTimeout()` option if custom timeout needed (replaces `WithSyncTimeout`)
 - [ ] **Created single abstraction constructor (if architecture supports it)**
 - [ ] Updated all tests

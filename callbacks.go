@@ -39,7 +39,8 @@ type CallbackExecutor interface {
 }
 
 // HookRegistrar extends CallbackExecutor with dynamic hook registration.
-// This interface is used by Subscribe to register broadcast hooks dynamically.
+// Machine.Subscribe no longer uses it: since v2.6 the Machine broadcasts state
+// changes itself, so Subscribe works with any CallbackExecutor, or none.
 // The hooks.Registry type implements this interface.
 type HookRegistrar interface {
 	RegisterPostTransitionHook(config hooks.PostTransitionHookConfig) error

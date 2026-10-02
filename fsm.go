@@ -44,7 +44,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/robbyt/go-fsm/v2/hooks"
 	"github.com/robbyt/go-fsm/v2/hooks/broadcast"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
@@ -76,10 +75,26 @@ type Machine struct {
 	callbacks   CallbackExecutor
 	logger      *slog.Logger
 
-	broadcastManager  *broadcast.Manager
-	broadcastTimeout  time.Duration
-	stateChanSetup    sync.Once
-	stateChanSetupErr error
+	// broadcastManager delivers state changes to Subscribe channels. It is
+	// called directly from transition and SetState, rather than registered as
+	// a hook on the callback registry: a registry may be shared by several
+	// Machines and runs every matching hook for whichever Machine is
+	// transitioning, so a registry hook would leak one Machine's states to
+	// another's subscribers. Access it only through broadcaster.
+	broadcastOnce    sync.Once
+	broadcastManager *broadcast.Manager
+	broadcastTimeout time.Duration
+}
+
+// broadcaster returns this Machine's broadcast manager, creating it on first
+// use. Creating it lazily rather than in New keeps it usable from an Option,
+// which runs before New returns, while still letting a manager first used
+// after New pick up the logger the options configured.
+func (fsm *Machine) broadcaster() *broadcast.Manager {
+	fsm.broadcastOnce.Do(func() {
+		fsm.broadcastManager = broadcast.NewManager(fsm.logger.Handler())
+	})
+	return fsm.broadcastManager
 }
 
 // New creates a finite state machine with the specified initial state and transitions.
@@ -250,6 +265,7 @@ func (fsm *Machine) SetStateWithContext(ctx context.Context, state string) error
 	if fsm.callbacks != nil {
 		fsm.callbacks.ExecutePostTransitionHooks(ctx, fromState, state)
 	}
+	fsm.broadcaster().Broadcast(state)
 
 	return nil
 }
@@ -352,6 +368,7 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 		fsm.callbacks.ExecutePostTransitionHooks(ctx, currentState, toState)
 		fsm.logger.Debug("Post-transition hooks completed", "from", currentState, "to", toState)
 	}
+	fsm.broadcaster().Broadcast(toState)
 
 	return nil
 }
@@ -367,9 +384,8 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 // send honors the provided context — if ctx is cancelled while it is blocked, Subscribe returns
 // the context's error.
 //
-// This method requires the FSM to be configured with a hooks.Registry (via WithCallbackRegistry).
-// The registry must be created with WithTransitions() to support wildcard pattern matching.
-// Returns an error if the callback executor does not support dynamic hook registration.
+// Subscribe does not need a callback registry. States are broadcast by the Machine
+// itself, after any post-transition hooks have run, for both Transition and SetState.
 //
 // A nil ctx or a nil channel returns an error wrapping ErrInvalidConfiguration.
 // Subscribing a channel that is already subscribed returns an error while the first
@@ -379,13 +395,8 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 // is cancelled, at which point it is automatically unsubscribed from receiving further broadcasts.
 // The channel is NOT closed; the caller maintains ownership and is responsible for channel lifecycle.
 //
-// Subscribe can be called multiple times with different channels and contexts. All channels
-// share the same broadcast manager, which is lazily initialized only once upon the first call.
-//
-// Each Machine registers its broadcast hook under a name unique to that Machine, so a single
-// hooks.Registry may be shared across Machines without Subscribe failing. Note, however, that
-// hooks registered on a shared registry fire for every Machine's transitions; prefer one registry
-// per Machine unless that shared behavior is intended.
+// Subscribe can be called multiple times with different channels and contexts. A subscriber
+// receives only this Machine's states, even when several Machines share one hooks.Registry.
 //
 // Broadcast delivery behavior is controlled by the timeout configured via WithBroadcastTimeout:
 //   - timeout = 0: best-effort delivery (non-blocking, drops if channel is full)
@@ -401,16 +412,7 @@ func (fsm *Machine) transition(ctx context.Context, toState string) error {
 //
 // Example:
 //
-//	registry, _ := hooks.NewRegistry(
-//	    hooks.WithLogHandler(handler),
-//	    hooks.WithTransitions(transitions.Typical),
-//	)
-//
-//	machine, _ := fsm.New(
-//	    transitions.StatusNew,
-//	    transitions.Typical,
-//	    fsm.WithCallbackRegistry(registry),
-//	)
+//	machine, _ := fsm.New(transitions.StatusNew, transitions.Typical)
 //
 //	ctx, cancel := context.WithCancel(context.Background())
 //	defer cancel()
@@ -444,37 +446,9 @@ func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 		return fmt.Errorf("%w: state channel cannot be nil", ErrInvalidConfiguration)
 	}
 
-	if fsm.callbacks == nil {
-		return fmt.Errorf("Subscribe requires a callback registry")
-	}
-
-	registrar, ok := fsm.callbacks.(HookRegistrar)
-	if !ok {
-		return fmt.Errorf("Subscribe requires a callback registry that supports dynamic hook registration")
-	}
-
-	fsm.stateChanSetup.Do(func() {
-		fsm.broadcastManager = broadcast.NewManager(fsm.logger.Handler())
-
-		// Use a per-machine hook name so multiple machines can share one
-		// registry. A constant name would collide on the second machine
-		// (ErrHookNameAlreadyExists), and because the error is cached in the
-		// sync.Once that machine's Subscribe would then fail permanently.
-		fsm.stateChanSetupErr = registrar.RegisterPostTransitionHook(hooks.PostTransitionHookConfig{
-			Name:   fmt.Sprintf("fsm.Subscribe.%p", fsm),
-			From:   []string{"*"},
-			To:     []string{"*"},
-			Action: fsm.broadcastManager.BroadcastHook,
-		})
-	})
-
-	if fsm.stateChanSetupErr != nil {
-		return fsm.stateChanSetupErr
-	}
-
 	// Register the subscriber and send the current state while holding the read
-	// lock. Broadcasts only happen under the write lock (the post-transition
-	// hook runs inside transition()), so the read lock guarantees no transition
+	// lock. Broadcasts only happen under the write lock (transition and
+	// SetState broadcast before releasing it), so the read lock guarantees no transition
 	// can broadcast between registering the channel and sending the initial
 	// state. Without it, a concurrent transition could make the subscriber
 	// observe a duplicated or out-of-order first value. Concurrent Subscribe
@@ -483,7 +457,7 @@ func (fsm *Machine) Subscribe(ctx context.Context, c chan string) error {
 	fsm.mutex.RLock()
 	defer fsm.mutex.RUnlock()
 
-	_, err := fsm.broadcastManager.GetStateChan(
+	_, err := fsm.broadcaster().GetStateChan(
 		ctx,
 		broadcast.WithCustomChannel(c),
 		broadcast.WithTimeout(fsm.broadcastTimeout),
