@@ -48,14 +48,31 @@ func (s *subscription) key() <-chan string {
 	return s.ch
 }
 
+// live reports whether this subscription still receives broadcasts. A
+// subscription whose context has been cancelled -- by its owner or by
+// UnsubscribeAll -- counts as dead even while its removal is still waiting for
+// the manager mutex, so a GetStateChan that wins the mutex in that window sees
+// the slot as free rather than rejecting the new registration as a duplicate.
+func (s *subscription) live() bool {
+	select {
+	case <-s.done:
+		return false
+	default:
+		return true
+	}
+}
+
 // Manager handles state change notifications to subscribers.
 type Manager struct {
 	mu sync.Mutex
 
-	// subscribers maps <-chan string to *subscription. UnsubscribeAll ranges
-	// over it WITHOUT mu on its first pass, because it must signal departure
-	// before contending for a mutex that a parked broadcast may be holding; a
-	// plain map would need its own second lock for that.
+	// subscribers maps <-chan string to *subscription. GetStateChan does its
+	// duplicate Load and its Store under mu, because the pair has to be atomic
+	// or two concurrent registrations of the same channel both succeed.
+	// UnsubscribeAll ranges over it WITHOUT mu on its first pass, because it
+	// must signal departure before contending for a mutex that a parked
+	// broadcast may be holding; a plain map would need its own second lock for
+	// that.
 	subscribers sync.Map
 
 	logger *slog.Logger
@@ -84,10 +101,22 @@ func NewManager(handler slog.Handler) *Manager {
 // Passing a non-cancellable context (context.Background()) is supported and
 // costs nothing, but leaves UnsubscribeAll as the only way to end the
 // subscription, so a subscriber that is simply dropped stays registered for the
-// lifetime of the manager. Prefer a cancellable context.
+// lifetime of the manager. Prefer a cancellable context. An already-cancelled
+// context is rejected.
+//
+// A channel may hold only one live subscription per manager: subscribing the
+// same channel twice returns an error while the first subscription is live.
+// Re-subscribing a channel whose previous subscription has ended is allowed,
+// as is subscribing one channel to several managers.
 func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan string, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("context cannot be nil")
+	}
+
+	// Reject an already-cancelled context rather than registering a subscription
+	// that is dead on arrival and would be torn down again immediately.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("cannot subscribe with a cancelled context: %w", err)
 	}
 
 	config := &Config{}
@@ -119,6 +148,16 @@ func (m *Manager) GetStateChan(ctx context.Context, opts ...Option) (<-chan stri
 	}
 
 	m.mu.Lock()
+	if value, loaded := m.subscribers.Load(sub.key()); loaded {
+		if existing, ok := value.(*subscription); ok && existing.live() {
+			m.mu.Unlock()
+			cancel()
+			return nil, fmt.Errorf("channel is already subscribed")
+		}
+		// The entry is dead: its context was cancelled and its removal is still
+		// waiting for this mutex. Take the slot over -- removal uses
+		// CompareAndDelete, so the older teardown cannot evict us.
+	}
 	m.subscribers.Store(sub.key(), sub)
 	m.mu.Unlock()
 
@@ -236,12 +275,14 @@ func (m *Manager) remove(sub *subscription) {
 	m.removeLocked(sub)
 }
 
-// removeLocked is remove with m.mu already held. LoadAndDelete so that only
-// the caller that actually removed the entry closes a manager-owned channel:
-// the context AfterFunc and UnsubscribeAll can both target the same
-// subscription, and the mutex serialises them.
+// removeLocked is remove with m.mu already held. CompareAndDelete rather than
+// Delete: the same channel may already have been re-subscribed under a newer
+// subscription, and a late removal must neither evict that entry nor close the
+// channel it is now using. It also means that of the context AfterFunc and
+// UnsubscribeAll, which can both target one subscription, only the caller that
+// actually removed the entry closes a manager-owned channel.
 func (m *Manager) removeLocked(sub *subscription) {
-	if _, loaded := m.subscribers.LoadAndDelete(sub.key()); loaded && !sub.externalChannel {
+	if m.subscribers.CompareAndDelete(sub.key(), sub) && !sub.externalChannel {
 		close(sub.ch)
 	}
 }
