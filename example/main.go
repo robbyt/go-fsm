@@ -27,26 +27,15 @@ import (
 	"time"
 
 	"github.com/robbyt/go-fsm/v2"
-	"github.com/robbyt/go-fsm/v2/hooks"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
 func run(ctx context.Context, logger *slog.Logger, output io.Writer) (*fsm.Machine, error) {
-	// Create callback registry
-	registry, err := hooks.NewRegistry(
-		hooks.WithLogger(logger),
-		hooks.WithTransitions(transitions.Typical),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create registry: %w", err)
-	}
-
 	// Create FSM with "typical" transitions
 	machine, err := fsm.New(
 		transitions.StatusNew,
 		transitions.Typical,
 		fsm.WithLogger(logger),
-		fsm.WithCallbackRegistry(registry),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create FSM: %w", err)
