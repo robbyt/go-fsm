@@ -387,14 +387,11 @@ import (
 	"fmt"
 
 	"github.com/robbyt/go-fsm/v2"
-	"github.com/robbyt/go-fsm/v2/hooks"
 	"github.com/robbyt/go-fsm/v2/transitions"
 )
 
-// The registry must be created with WithTransitions for broadcast support.
-registry, _ := hooks.NewRegistry(hooks.WithTransitions(transitions.Typical))
-machine, _ := fsm.New(transitions.StatusNew, transitions.Typical,
-	fsm.WithCallbackRegistry(registry))
+// No hooks.Registry is needed: the machine broadcasts state changes itself.
+machine, _ := fsm.New(transitions.StatusNew, transitions.Typical)
 
 ctx, cancel := context.WithCancel(context.Background())
 defer cancel()
@@ -419,10 +416,12 @@ _ = machine.Transition(transitions.StatusBooting)
 ```
 
 The `Subscribe()` method:
-- Automatically sets up broadcast management
+- Works with or without a callback registry
 - Sends the current state immediately upon subscription
+- Broadcasts every `Transition` and `SetState`, after any post-transition hooks have run
+- Delivers only this machine's states, even when machines share a `hooks.Registry`
 - Unsubscribes the channel when the context is cancelled
-- Supports multiple concurrent subscribers
+- Supports multiple concurrent subscribers; each channel may be subscribed only once at a time
 
 Configure broadcast timeout behavior with `fsm.WithBroadcastTimeout()`:
 
@@ -431,7 +430,6 @@ machine, _ := fsm.New(
 	transitions.StatusNew,
 	transitions.Typical,
 	fsm.WithBroadcastTimeout(5*time.Second), // timeout mode
-	fsm.WithCallbackRegistry(registry),
 )
 ```
 
@@ -441,7 +439,7 @@ Timeout values:
 - `> 0`: blocks up to the specified duration, then drops the message if the channel is full
 - `< 0`: guaranteed delivery (blocks indefinitely until the message is delivered)
 
-> **Note:** broadcasts run inside the post-transition hook chain while the FSM is locked. A slow subscriber stalls every transition for up to the configured timeout, and `< 0` (guaranteed delivery) can stall it indefinitely. Prefer `0` or a finite timeout in production unless you control the consumer.
+> **Note:** broadcasts run after the post-transition hook chain, while the FSM is still locked. A slow subscriber stalls every transition for up to the configured timeout, and `< 0` (guaranteed delivery) can stall it indefinitely. Prefer `0` or a finite timeout in production unless you control the consumer.
 
 #### Advanced: Custom Broadcast Manager
 

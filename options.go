@@ -58,8 +58,8 @@ func WithLogHandler(handler slog.Handler) Option {
 
 // WithBroadcastTimeout sets the default timeout for broadcast delivery when using Subscribe.
 // This option only affects the built-in machine.Subscribe() method. If you manually configure
-// a broadcast.Manager and hooks.Registry, configure the timeout via broadcast.WithTimeout()
-// when calling broadcastManager.GetStateChan() instead.
+// a broadcast.Manager, configure the timeout via broadcast.WithTimeout() when calling
+// broadcastManager.GetStateChan() instead.
 //
 // The timeout controls how long broadcasts will wait when sending to subscriber channels:
 //   - timeout = 0: best-effort delivery (non-blocking, drops message if channel is full)
